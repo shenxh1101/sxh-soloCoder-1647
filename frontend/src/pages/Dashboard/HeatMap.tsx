@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { Card, Button, Empty, Spin } from 'antd'
 import ReactECharts from 'echarts-for-react'
 import type { DashboardStats, StatsFilterParams } from '@/types'
@@ -21,18 +21,13 @@ function getRateColor(rate: number): string {
 }
 
 function HeatMap({ data = [], loading, filterParams, onDrillDown }: HeatMapProps) {
-  const [drillDown, setDrillDown] = useState<string | null>(null)
-
   const displayData = useMemo(() => {
-    if (!filterParams?.province && !drillDown) {
-      return data.filter(item => item.level === 'province')
-    }
-    const provinceName = drillDown || filterParams?.province
+    const provinceName = filterParams?.province
     if (provinceName) {
       return data.filter(item => item.level === 'city' && item.provinceName === provinceName)
     }
     return data.filter(item => item.level === 'province')
-  }, [data, drillDown, filterParams])
+  }, [data, filterParams?.province])
 
   const sortedData = useMemo(
     () => [...displayData].sort((a, b) => a.waterQualityComplianceRate - b.waterQualityComplianceRate),
@@ -165,7 +160,7 @@ function HeatMap({ data = [], loading, filterParams, onDrillDown }: HeatMapProps
               shadowColor: 'rgba(0,0,0,0.25)'
             }
           },
-          ...(drillDown || filterParams?.province
+          ...(filterParams?.province
             ? {}
             : {
                 cursor: 'pointer'
@@ -194,26 +189,24 @@ function HeatMap({ data = [], loading, filterParams, onDrillDown }: HeatMapProps
         }
       ]
     }
-  }, [sortedData, drillDown, getRegionName, filterParams?.province])
+  }, [sortedData, getRegionName, filterParams?.province])
 
   const handleChartClick = (params: any) => {
-    if (drillDown || filterParams?.province) return
+    if (filterParams?.province) return
     if (params.componentType === 'series' && params.seriesType === 'bar') {
       const provinceName = params.name
       if (provinceName) {
-        setDrillDown(provinceName)
         onDrillDown?.(provinceName)
       }
     }
   }
 
   const handleBack = () => {
-    setDrillDown(null)
     onDrillDown?.(null)
   }
 
   const chartHeight = Math.max(300, sortedData.length * 36 + 60)
-  const currentProvince = drillDown || filterParams?.province
+  const currentProvince = filterParams?.province
 
   return (
     <Card

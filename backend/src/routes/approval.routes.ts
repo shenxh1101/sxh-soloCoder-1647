@@ -103,7 +103,7 @@ router.get('/pending/count', authenticate, async (req: Request, res: Response): 
       return;
     }
 
-    const count = await getPendingApprovalCount(currentUser.userId);
+    const count = await getPendingApprovalCount(currentUser.userId, currentUser.role, currentUser.userLevel);
 
     success(res, { count }, '获取待审批数量成功');
   } catch (err) {

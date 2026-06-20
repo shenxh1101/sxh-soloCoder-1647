@@ -185,7 +185,7 @@ export const createApprovalWorkflow = async (
 
 export const approveStage1 = async (
   request: IApprovalRequest,
-  currentUser: { userId: number; username: string }
+  currentUser: { userId: number; username: string; userLevel?: number; role?: string }
 ): Promise<IApprovalWorkflowAttributes | null> => {
   const workflow = await ApprovalWorkflow.findByPk(request.workflowId);
   if (!workflow) {
@@ -200,8 +200,15 @@ export const approveStage1 = async (
     throw new Error('审批流程已结束');
   }
 
-  if (workflow.stage1Handler && workflow.stage1Handler !== currentUser.userId) {
-    throw new Error('您不是该审批的处理人');
+  const isAdmin = currentUser.role === UserRole.ADMIN;
+  if (workflow.stage1Handler) {
+    if (workflow.stage1Handler !== currentUser.userId) {
+      throw new Error('您不是该审批的处理人');
+    }
+  } else {
+    if (currentUser.userLevel !== UserLevel.MUNICIPAL && !isAdmin) {
+      throw new Error('您没有权限处理该审批');
+    }
   }
 
   const transaction = await sequelize.transaction();
@@ -272,7 +279,7 @@ export const approveStage1 = async (
 
 export const approveStage2 = async (
   request: IApprovalRequest,
-  currentUser: { userId: number; username: string }
+  currentUser: { userId: number; username: string; userLevel?: number; role?: string }
 ): Promise<IApprovalWorkflowAttributes | null> => {
   const workflow = await ApprovalWorkflow.findByPk(request.workflowId);
   if (!workflow) {
@@ -287,8 +294,15 @@ export const approveStage2 = async (
     throw new Error('审批流程已结束');
   }
 
-  if (workflow.stage2Handler && workflow.stage2Handler !== currentUser.userId) {
-    throw new Error('您不是该审批的处理人');
+  const isAdmin = currentUser.role === UserRole.ADMIN;
+  if (workflow.stage2Handler) {
+    if (workflow.stage2Handler !== currentUser.userId) {
+      throw new Error('您不是该审批的处理人');
+    }
+  } else {
+    if (currentUser.userLevel !== UserLevel.PROVINCIAL && !isAdmin) {
+      throw new Error('您没有权限处理该审批');
+    }
   }
 
   const transaction = await sequelize.transaction();
@@ -359,7 +373,7 @@ export const approveStage2 = async (
 
 export const approveStage3 = async (
   request: IApprovalRequest,
-  currentUser: { userId: number; username: string }
+  currentUser: { userId: number; username: string; userLevel?: number; role?: string }
 ): Promise<IApprovalWorkflowAttributes | null> => {
   const workflow = await ApprovalWorkflow.findByPk(request.workflowId);
   if (!workflow) {
@@ -374,8 +388,15 @@ export const approveStage3 = async (
     throw new Error('审批流程已结束');
   }
 
-  if (workflow.stage3Handler && workflow.stage3Handler !== currentUser.userId) {
-    throw new Error('您不是该审批的处理人');
+  const isAdmin = currentUser.role === UserRole.ADMIN;
+  if (workflow.stage3Handler) {
+    if (workflow.stage3Handler !== currentUser.userId) {
+      throw new Error('您不是该审批的处理人');
+    }
+  } else {
+    if (currentUser.userLevel !== UserLevel.NATIONAL && !isAdmin) {
+      throw new Error('您没有权限处理该审批');
+    }
   }
 
   const transaction = await sequelize.transaction();
@@ -569,22 +590,47 @@ export const getApprovalList = async (
   if (currentUser && tab) {
     if (tab === 'pending') {
       const pendingWhere: any[] = [];
-      pendingWhere.push({
-        currentStage: WorkflowStage.STAGE_1_PENDING,
-        stage1Handler: currentUser.userId,
-        workflowStatus: WorkflowStatus.IN_PROGRESS,
-      });
-      pendingWhere.push({
-        currentStage: WorkflowStage.STAGE_2_PENDING,
-        stage2Handler: currentUser.userId,
-        workflowStatus: WorkflowStatus.IN_PROGRESS,
-      });
-      pendingWhere.push({
-        currentStage: WorkflowStage.STAGE_3_PENDING,
-        stage3Handler: currentUser.userId,
-        workflowStatus: WorkflowStatus.IN_PROGRESS,
-      });
-      where[Op.or] = pendingWhere;
+      const userLevel = currentUser.userLevel;
+      const isAdmin = currentUser.role === UserRole.ADMIN;
+
+      if (userLevel === UserLevel.MUNICIPAL || isAdmin) {
+        pendingWhere.push({
+          currentStage: WorkflowStage.STAGE_1_PENDING,
+          workflowStatus: WorkflowStatus.IN_PROGRESS,
+          [Op.or]: [
+            { stage1Handler: currentUser.userId },
+            { stage1Handler: { [Op.is]: null } }
+          ]
+        });
+      }
+
+      if (userLevel === UserLevel.PROVINCIAL || isAdmin) {
+        pendingWhere.push({
+          currentStage: WorkflowStage.STAGE_2_PENDING,
+          workflowStatus: WorkflowStatus.IN_PROGRESS,
+          [Op.or]: [
+            { stage2Handler: currentUser.userId },
+            { stage2Handler: { [Op.is]: null } }
+          ]
+        });
+      }
+
+      if (userLevel === UserLevel.NATIONAL || isAdmin) {
+        pendingWhere.push({
+          currentStage: WorkflowStage.STAGE_3_PENDING,
+          workflowStatus: WorkflowStatus.IN_PROGRESS,
+          [Op.or]: [
+            { stage3Handler: currentUser.userId },
+            { stage3Handler: { [Op.is]: null } }
+          ]
+        });
+      }
+
+      if (pendingWhere.length > 0) {
+        where[Op.or] = pendingWhere;
+      } else {
+        where.workflowId = -1;
+      }
     } else if (tab === 'initiated') {
       where.applicantId = currentUser.userId;
     }
@@ -864,7 +910,8 @@ export const getApprovalHistory = async (workflowId: number): Promise<any[]> => 
 
 export const getPendingApprovalCount = async (
   userId: number,
-  userRole?: string
+  userRole?: string,
+  userLevel?: number
 ): Promise<{ stage1: number; stage2: number; stage3: number; total: number }> => {
   const cacheKey = `${CACHE_PREFIX}pending:${userId}`;
   try {
@@ -876,29 +923,41 @@ export const getPendingApprovalCount = async (
     console.error('Cache read error:', err);
   }
 
-  const stage1 = await ApprovalWorkflow.count({
-    where: {
-      currentStage: WorkflowStage.STAGE_1_PENDING,
-      workflowStatus: WorkflowStatus.IN_PROGRESS,
-      stage1Handler: userId,
-    },
-  });
+  const isAdmin = userRole === UserRole.ADMIN;
 
-  const stage2 = await ApprovalWorkflow.count({
-    where: {
-      currentStage: WorkflowStage.STAGE_2_PENDING,
-      workflowStatus: WorkflowStatus.IN_PROGRESS,
-      stage2Handler: userId,
-    },
-  });
+  const stage1Where: any = {
+    currentStage: WorkflowStage.STAGE_1_PENDING,
+    workflowStatus: WorkflowStatus.IN_PROGRESS,
+  };
+  const stage1Or: any[] = [{ stage1Handler: userId }];
+  if (userLevel === UserLevel.MUNICIPAL || isAdmin) {
+    stage1Or.push({ stage1Handler: { [Op.is]: null } });
+  }
+  stage1Where[Op.or] = stage1Or;
 
-  const stage3 = await ApprovalWorkflow.count({
-    where: {
-      currentStage: WorkflowStage.STAGE_3_PENDING,
-      workflowStatus: WorkflowStatus.IN_PROGRESS,
-      stage3Handler: userId,
-    },
-  });
+  const stage2Where: any = {
+    currentStage: WorkflowStage.STAGE_2_PENDING,
+    workflowStatus: WorkflowStatus.IN_PROGRESS,
+  };
+  const stage2Or: any[] = [{ stage2Handler: userId }];
+  if (userLevel === UserLevel.PROVINCIAL || isAdmin) {
+    stage2Or.push({ stage2Handler: { [Op.is]: null } });
+  }
+  stage2Where[Op.or] = stage2Or;
+
+  const stage3Where: any = {
+    currentStage: WorkflowStage.STAGE_3_PENDING,
+    workflowStatus: WorkflowStatus.IN_PROGRESS,
+  };
+  const stage3Or: any[] = [{ stage3Handler: userId }];
+  if (userLevel === UserLevel.NATIONAL || isAdmin) {
+    stage3Or.push({ stage3Handler: { [Op.is]: null } });
+  }
+  stage3Where[Op.or] = stage3Or;
+
+  const stage1 = await ApprovalWorkflow.count({ where: stage1Where }) as number;
+  const stage2 = await ApprovalWorkflow.count({ where: stage2Where }) as number;
+  const stage3 = await ApprovalWorkflow.count({ where: stage3Where }) as number;
 
   const result = { stage1, stage2, stage3, total: stage1 + stage2 + stage3 };
 

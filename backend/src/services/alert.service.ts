@@ -75,7 +75,7 @@ export const detectContinuousOverproof = async (): Promise<IAlertCreationAttribu
   const consecutiveDays = await getConfigThreshold('alert:continuous_overproof_days', 3);
   const endDate = new Date();
   const startDate = new Date();
-  startDate.setDate(startDate.getDate() - consecutiveDays + 1);
+  startDate.setDate(startDate.getDate() - consecutiveDays * 2 + 1);
 
   const outlets = await SewageOutlet.findAll({
     include: [
@@ -120,30 +120,63 @@ export const detectContinuousOverproof = async (): Promise<IAlertCreationAttribu
 
     const sortedDates = Array.from(dailyStats.keys()).sort();
 
-    if (sortedDates.length < consecutiveDays) continue;
+    if (sortedDates.length < 1) continue;
 
     let nh3nConsecutive = 0;
     let tpConsecutive = 0;
     let maxNh3nValue = 0;
     let maxTpValue = 0;
+    let nh3nMaxConsecutive = 0;
+    let tpMaxConsecutive = 0;
+    let nh3nMaxValue = 0;
+    let tpMaxValue = 0;
 
-    for (const dateKey of sortedDates) {
+    for (let i = 0; i < sortedDates.length; i++) {
+      const dateKey = sortedDates[i];
       const dayStat = dailyStats.get(dateKey)!;
+
+      if (i > 0) {
+        const prevDate = new Date(sortedDates[i - 1]);
+        const currDate = new Date(dateKey);
+        const diffDays = Math.round((currDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24));
+
+        if (diffDays > 1) {
+          nh3nConsecutive = 0;
+          tpConsecutive = 0;
+          maxNh3nValue = 0;
+          maxTpValue = 0;
+        }
+      }
 
       if (dayStat.nh3nOverproof) {
         nh3nConsecutive++;
         maxNh3nValue = Math.max(maxNh3nValue, dayStat.maxNh3n);
+        if (nh3nConsecutive > nh3nMaxConsecutive) {
+          nh3nMaxConsecutive = nh3nConsecutive;
+          nh3nMaxValue = maxNh3nValue;
+        }
       } else {
         nh3nConsecutive = 0;
+        maxNh3nValue = 0;
       }
 
       if (dayStat.tpOverproof) {
         tpConsecutive++;
         maxTpValue = Math.max(maxTpValue, dayStat.maxTp);
+        if (tpConsecutive > tpMaxConsecutive) {
+          tpMaxConsecutive = tpConsecutive;
+          tpMaxValue = maxTpValue;
+        }
       } else {
         tpConsecutive = 0;
+        maxTpValue = 0;
       }
     }
+
+    nh3nConsecutive = nh3nMaxConsecutive;
+    tpConsecutive = tpMaxConsecutive;
+    maxNh3nValue = nh3nMaxValue;
+    maxTpValue = tpMaxValue;
 
     const existingAlert = await Alert.findOne({
       where: {
@@ -219,7 +252,7 @@ export const detectProgressDelay = async (): Promise<IAlertCreationAttributes[]>
     const plannedProgress = project.plannedProgress || 0;
     const deviation = plannedProgress - actualProgress;
 
-    if (deviation < deviationThreshold) continue;
+    if (deviation <= deviationThreshold) continue;
     if (actualProgress > plannedProgress) continue;
 
     const existingAlert = await Alert.findOne({
@@ -242,7 +275,7 @@ export const detectProgressDelay = async (): Promise<IAlertCreationAttributes[]>
       sourceCode: project.projectCode,
       sourceName: project.projectName,
       regionId: project.waterBody?.regionId,
-      triggerCondition: `实际进度落后计划${deviation.toFixed(1)}%`,
+      triggerCondition: `实际进度落后计划超过${deviationThreshold}%`,
       triggerValue: deviation,
       thresholdValue: deviationThreshold,
       alertContent: `项目【${project.projectName}】实际进度${actualProgress}%，计划进度${plannedProgress}%，进度落后${deviation.toFixed(1)}%，超过阈值${deviationThreshold}%`,

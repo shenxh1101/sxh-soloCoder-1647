@@ -9,7 +9,7 @@ import TrendChart from './TrendChart'
 import { getDashboardStats } from '@/api/stats'
 import type { StatsFilterParams, DashboardStats } from '@/types'
 
-const { Title } = Typography
+const { Title, Text } = Typography
 
 const WATER_LEVEL_OPTIONS = [
   { value: 'all', label: '全部' },
@@ -93,13 +93,18 @@ function Dashboard() {
   }, [setSearchParams, province])
 
   const handleDrillDown = useCallback((drillProvince: string | null) => {
-    if (drillProvince) {
-      setSearchParams((prev) => {
+    setSearchParams((prev) => {
+      if (drillProvince) {
         prev.set('province', drillProvince)
-        return prev
-      })
-    }
-  }, [setSearchParams])
+      } else {
+        prev.delete('province')
+      }
+      if (waterLevel !== 'all') {
+        prev.set('waterLevel', waterLevel)
+      }
+      return prev
+    })
+  }, [setSearchParams, waterLevel])
 
   const handleTimeRangeChange = useCallback((newDays: number) => {
     setDays(newDays)
@@ -110,6 +115,16 @@ function Dashboard() {
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Title level={3} style={{ margin: 0 }}>
           水环境治理核心看板
+          {province !== 'all' && (
+            <Text type="secondary" style={{ fontSize: 14, marginLeft: 12 }}>
+              - {province}
+            </Text>
+          )}
+          {waterLevel !== 'all' && (
+            <Text type="secondary" style={{ fontSize: 14, marginLeft: 12 }}>
+              - {WATER_LEVEL_OPTIONS.find(o => o.value === waterLevel)?.label}
+            </Text>
+          )}
         </Title>
         <Space>
           <FilterOutlined />
