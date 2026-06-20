@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useMemo, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Row, Col, Select, Space, Typography } from 'antd'
 import { FilterOutlined } from '@ant-design/icons'
 import HeatMap from './HeatMap'
@@ -9,17 +10,66 @@ import type { StatsFilterParams } from '@/types'
 
 const { Title } = Typography
 
-function Dashboard() {
-  const [filterParams, setFilterParams] = useState<StatsFilterParams>({})
-  const [province, setProvince] = useState<string>('all')
-  const [waterLevel, setWaterLevel] = useState<string>('all')
+const WATER_LEVEL_OPTIONS = [
+  { value: 'all', label: '全部' },
+  { value: 'black_odorous', label: '黑臭级' },
+  { value: 'mild', label: '轻度黑臭' },
+  { value: 'severe', label: '重度黑臭' },
+  { value: 'eliminated', label: '已消除' }
+]
 
-  const handleFilterChange = () => {
-    setFilterParams({
-      province: province !== 'all' ? province : undefined,
-      waterLevel: waterLevel !== 'all' ? waterLevel : undefined
+const PROVINCE_OPTIONS = [
+  { value: 'all', label: '全部省份' },
+  { value: '北京市', label: '北京市' },
+  { value: '上海市', label: '上海市' },
+  { value: '广东省', label: '广东省' },
+  { value: '江苏省', label: '江苏省' },
+  { value: '浙江省', label: '浙江省' },
+  { value: '山东省', label: '山东省' },
+  { value: '四川省', label: '四川省' },
+  { value: '湖北省', label: '湖北省' },
+  { value: '湖南省', label: '湖南省' },
+  { value: '河南省', label: '河南省' }
+]
+
+function Dashboard() {
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  const province = searchParams.get('province') || 'all'
+  const waterLevel = searchParams.get('waterLevel') || 'all'
+
+  const filterParams = useMemo<StatsFilterParams>(() => ({
+    province: province !== 'all' ? province : undefined,
+    waterLevel: waterLevel !== 'all' ? waterLevel : undefined
+  }), [province, waterLevel])
+
+  const handleProvinceChange = useCallback((value: string) => {
+    setSearchParams((prev) => {
+      if (value === 'all') {
+        prev.delete('province')
+      } else {
+        prev.set('province', value)
+      }
+      if (waterLevel !== 'all') {
+        prev.set('waterLevel', waterLevel)
+      }
+      return prev
     })
-  }
+  }, [setSearchParams, waterLevel])
+
+  const handleWaterLevelChange = useCallback((value: string) => {
+    setSearchParams((prev) => {
+      if (value === 'all') {
+        prev.delete('waterLevel')
+      } else {
+        prev.set('waterLevel', value)
+      }
+      if (province !== 'all') {
+        prev.set('province', province)
+      }
+      return prev
+    })
+  }, [setSearchParams, province])
 
   return (
     <div style={{ padding: 16 }}>
@@ -32,36 +82,15 @@ function Dashboard() {
           <span>筛选条件：</span>
           <Select
             value={province}
-            onChange={setProvince}
-            onBlur={handleFilterChange}
+            onChange={handleProvinceChange}
             style={{ width: 150 }}
-            options={[
-              { value: 'all', label: '全部省份' },
-              { value: '北京市', label: '北京市' },
-              { value: '上海市', label: '上海市' },
-              { value: '广东省', label: '广东省' },
-              { value: '江苏省', label: '江苏省' },
-              { value: '浙江省', label: '浙江省' },
-              { value: '山东省', label: '山东省' },
-              { value: '四川省', label: '四川省' },
-              { value: '湖北省', label: '湖北省' },
-              { value: '湖南省', label: '湖南省' },
-              { value: '河南省', label: '河南省' }
-            ]}
+            options={PROVINCE_OPTIONS}
           />
           <Select
             value={waterLevel}
-            onChange={setWaterLevel}
-            onBlur={handleFilterChange}
+            onChange={handleWaterLevelChange}
             style={{ width: 150 }}
-            options={[
-              { value: 'all', label: '全部等级' },
-              { value: '1', label: 'Ⅰ类水质' },
-              { value: '2', label: 'Ⅱ类水质' },
-              { value: '3', label: 'Ⅲ类水质' },
-              { value: '4', label: 'Ⅳ类水质' },
-              { value: '5', label: 'Ⅴ类水质' }
-            ]}
+            options={WATER_LEVEL_OPTIONS}
           />
         </Space>
       </div>

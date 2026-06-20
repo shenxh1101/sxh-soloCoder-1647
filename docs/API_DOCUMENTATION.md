@@ -2237,4 +2237,176 @@
 
 ---
 
-### 20.6
+### 20.6 更新配置
+
+**请求方式**: PUT  
+**路径**: `/api/configs/:id`  
+**权限**: 已认证
+
+**请求参数**:
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| configValue | string | 是 | 配置值 |
+| description | string | 否 | 描述 |
+
+---
+
+### 20.7 按键更新配置
+
+**请求方式**: PUT  
+**路径**: `/api/configs/key/:key`  
+**权限**: 已认证
+
+**路径参数**:
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| key | string | 是 | 配置键 |
+
+**请求参数**:
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| configValue | string | 是 | 配置值 |
+
+---
+
+### 20.8 删除配置
+
+**请求方式**: DELETE  
+**路径**: `/api/configs/:id`  
+**权限**: 已认证
+
+---
+
+### 20.9 批量更新配置
+
+**请求方式**: POST  
+**路径**: `/api/configs/batch-update`  
+**权限**: 已认证
+
+**请求参数**:
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| configs | array | 是 | 配置数组 [{configKey, configValue}] |
+
+---
+
+### 20.10 初始化默认配置
+
+**请求方式**: POST  
+**路径**: `/api/configs/init-defaults`  
+**权限**: 已认证
+
+---
+
+### 20.11 清除配置缓存
+
+**请求方式**: POST  
+**路径**: `/api/configs/clear-cache`  
+**权限**: 已认证
+
+**请求参数**:
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| configKey | string | 否 | 配置键，不传则清除所有 |
+
+---
+
+### 20.12 获取定时任务列表
+
+**请求方式**: GET  
+**路径**: `/api/configs/jobs`  
+**权限**: 已认证
+
+---
+
+### 20.13 启动定时任务
+
+**请求方式**: POST  
+**路径**: `/api/configs/jobs/:name/start`  
+**权限**: 已认证
+
+**路径参数**:
+
+| 参数名 | 类型 | 必填 | 说明 |
+|--------|------|------|------|
+| name | string | 是 | 任务名称 |
+
+---
+
+### 20.14 停止定时任务
+
+**请求方式**: POST  
+**路径**: `/api/configs/jobs/:name/stop`  
+**权限**: 已认证
+
+---
+
+### 20.15 手动执行定时任务
+
+**请求方式**: POST  
+**路径**: `/api/configs/jobs/:name/run`  
+**权限**: 已认证
+
+---
+
+## 21. 健康检查
+
+### 21.1 健康检查
+
+**请求方式**: GET  
+**路径**: `/health`  
+**权限**: 公开
+
+**响应示例**:
+```json
+{
+  "code": 200,
+  "message": "OK",
+  "data": {
+    "status": "healthy",
+    "environment": "development",
+    "timestamp": "2024-01-01T00:00:00.000Z",
+    "services": {
+      "database": "connected",
+      "redis": "connected"
+    }
+  },
+  "timestamp": 1699999999999
+}
+```
+
+---
+
+## 22. API根路径
+
+### 22.1 API信息
+
+**请求方式**: GET  
+**路径**: `/api`  
+**权限**: 公开
+
+**响应示例**:
+```json
+{
+  "code": 200,
+  "message": "API v1.0",
+  "data": {
+    "version": "1.0.0",
+    "endpoints": {
+      "auth": "/api/auth/*",
+      "stats": "/api/stats/*",
+      "alerts": "/api/alerts/*",
+      "approvals": "/api/approvals/*",
+      "tasks": "/api/tasks/*",
+      "reports": "/api/reports/*",
+      "configs": "/api/configs/*"
+    }
+  },
+  "timestamp": 1699999999999
+}
+```

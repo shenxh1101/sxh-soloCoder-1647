@@ -180,6 +180,38 @@ export const importAnnualTasks = async (
       console.warn(`导入完成，成功${result.successCount}条，失败${result.failCount}条`);
     }
 
+    for (const task of result.tasks) {
+      try {
+        const completionRate = task.completionRate || 0;
+        const plannedBudget = task.plannedBudget || 0;
+        const allocatedFunds = task.allocatedFunds || 0;
+
+        if (task.plannedEndDate && plannedBudget > 0) {
+          const expectedFundByProgress = plannedBudget * (completionRate / 100);
+          const fundDeviationFromProgress = expectedFundByProgress > 0
+            ? Math.round(((allocatedFunds - expectedFundByProgress) / expectedFundByProgress) * 10000) / 100
+            : 0;
+
+          if (Math.abs(fundDeviationFromProgress) > 30) {
+            await AnnualTask.update(
+              {
+                isBudgetAbnormal: true,
+                abnormalReminder: [
+                  task.abnormalReminder,
+                  `进度${completionRate}%对应预期拨付${expectedFundByProgress.toFixed(2)}元，实际拨付${allocatedFunds.toFixed(2)}元，偏差${fundDeviationFromProgress}%`,
+                ].filter(Boolean).join('；'),
+              },
+              { where: { taskId: task.taskId } },
+            );
+          }
+
+          await validateFundTaskMatch(task.taskId);
+        }
+      } catch (err) {
+        console.error(`导入后校验任务${task.taskId}资金节奏失败:`, err);
+      }
+    }
+
     await checkFundAbnormalAndPush();
     await clearTaskCache();
 
@@ -359,6 +391,18 @@ export const updateTask = async (
 
   await clearTaskCache();
 
+  try {
+    const timingIssues = await validateFundTaskMatch(taskId);
+    if (timingIssues.length > 0) {
+      const refreshedTask = await AnnualTask.findByPk(taskId);
+      if (refreshedTask?.isBudgetAbnormal && !task.isBudgetAbnormal) {
+        await checkFundAbnormalAndPush();
+      }
+    }
+  } catch (err) {
+    console.error(`更新后校验任务${taskId}资金节奏失败:`, err);
+  }
+
   if (updateData.isBudgetAbnormal && !task.isBudgetAbnormal) {
     await checkFundAbnormalAndPush();
   }
@@ -454,9 +498,30 @@ export const getFundList = async (
   return { rows: rows.map((r) => r.toJSON()), count };
 };
 
-export const validateFundTaskMatch = async (taskId: number): Promise<void> => {
+const pushFundTimingAlert = async (task: AnnualTask, issues: string[]): Promise<void> => {
+  const financeUsers = await User.findAll({
+    where: { department: '财务科', isActive: true },
+    attributes: ['userId'],
+  });
+  if (financeUsers.length === 0) return;
+
+  const region = await Region.findByPk(task.regionId);
+  const content = issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n');
+
+  await pushMessage({
+    messageType: MessageType.NOTIFICATION,
+    title: `资金拨付节奏异常提醒 - ${region?.regionName || '未知区域'}`,
+    content: `年度任务【${task.taskContent}】存在以下资金节奏异常：\n${content}\n\n请及时核实并调整资金拨付计划。`,
+    channels: [PushChannel.APP, PushChannel.SMS, PushChannel.EMAIL],
+    receiverType: ReceiverType.USER,
+    receiverIds: financeUsers.map((u) => u.userId),
+    relatedId: task.taskId,
+  });
+};
+
+export const validateFundTaskMatch = async (taskId: number): Promise<string[]> => {
   const task = await AnnualTask.findByPk(taskId);
-  if (!task || !task.plannedEndDate) return;
+  if (!task || !task.plannedEndDate) return [];
 
   const totalDisbursed = await FundDisbursement.sum('amount', {
     where: { taskId, paymentStatus: PaymentStatus.PAID },
@@ -480,7 +545,46 @@ export const validateFundTaskMatch = async (taskId: number): Promise<void> => {
     fundMatchStatus = FundMatchStatus.BASICALLY_MATCHED;
   }
 
-  await task.update({ fundMatchStatus });
+  const completionRate = task.completionRate || 0;
+  const fundRate = task.plannedBudget ? (totalDisbursed / task.plannedBudget) * 100 : 0;
+  const daysRemaining = Math.ceil((plannedEndDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+  const issues: string[] = [];
+
+  if (now > plannedEndDate && fundRate < 80) {
+    issues.push(`任务已过计划完成时间，但资金拨付率仅为${fundRate.toFixed(1)}%，低于80%阈值`);
+  }
+
+  if (completionRate > 60 && fundRate < 40) {
+    issues.push(`任务进度达${completionRate}%但资金拨付率仅${fundRate.toFixed(1)}%，资金拨付严重滞后`);
+  }
+
+  if (fundRate > 90 && expectedProgress < 50 && completionRate < 30) {
+    issues.push(`资金前半段已拨付${fundRate.toFixed(1)}%，但进度仅${completionRate}%，资金使用效率低`);
+  }
+
+  if (daysRemaining > 0 && daysRemaining <= 30 && fundRate < 60) {
+    issues.push(`距计划完成日期仅剩${daysRemaining}天，但资金拨付率仅${fundRate.toFixed(1)}%，需加速拨付`);
+  }
+
+  if (issues.length > 0) {
+    fundMatchStatus = FundMatchStatus.UNMATCHED;
+  } else if (fundMatchStatus === FundMatchStatus.MATCHED && Math.abs(deviation) > 10) {
+    fundMatchStatus = FundMatchStatus.BASICALLY_MATCHED;
+  }
+
+  const isBudgetAbnormal = issues.length > 0 || Math.abs(deviation) > 20;
+  const existingReminder = task.abnormalReminder || '';
+  const timingReminder = issues.length > 0 ? issues.join('；') : '';
+  const abnormalReminder = [existingReminder, timingReminder].filter(Boolean).join('；') || undefined;
+
+  await task.update({ fundMatchStatus, isBudgetAbnormal, abnormalReminder });
+
+  if (issues.length > 0) {
+    await pushFundTimingAlert(task, issues);
+  }
+
+  return issues;
 };
 
 export const checkFundAbnormalAndPush = async (): Promise<{ abnormalCount: number; pushedCount: number }> => {
@@ -495,10 +599,6 @@ export const checkFundAbnormalAndPush = async (): Promise<{ abnormalCount: numbe
     ],
   });
 
-  if (abnormalTasks.length === 0) {
-    return { abnormalCount: 0, pushedCount: 0 };
-  }
-
   const financeUsers = await User.findAll({
     where: {
       department: '财务科',
@@ -507,31 +607,46 @@ export const checkFundAbnormalAndPush = async (): Promise<{ abnormalCount: numbe
     attributes: ['userId'],
   });
 
-  if (financeUsers.length === 0) {
-    return { abnormalCount: abnormalTasks.length, pushedCount: 0 };
-  }
-
-  const content = abnormalTasks
-    .map((task) => `【${task.region?.regionName}】${task.taskContent}，预算偏差${task.budgetDeviation}%`)
-    .join('\n');
-
   let pushedCount = 0;
-  try {
-    await pushMessage({
-      messageType: MessageType.NOTIFICATION,
-      title: '资金异常提醒',
-      content: `检测到${abnormalTasks.length}条资金异常记录：\n${content}`,
-      channels: [PushChannel.APP, PushChannel.SMS],
-      receiverType: ReceiverType.USER,
-      receiverIds: financeUsers.map((u) => u.userId),
-      relatedId: abnormalTasks[0].taskId,
-    });
-    pushedCount = financeUsers.length;
-  } catch (err) {
-    console.error('Failed to push fund abnormal alert:', err);
+
+  if (abnormalTasks.length > 0 && financeUsers.length > 0) {
+    const content = abnormalTasks
+      .map((task) => `【${task.region?.regionName}】${task.taskContent}，预算偏差${task.budgetDeviation}%`)
+      .join('\n');
+
+    try {
+      await pushMessage({
+        messageType: MessageType.NOTIFICATION,
+        title: '资金异常提醒',
+        content: `检测到${abnormalTasks.length}条资金异常记录：\n${content}`,
+        channels: [PushChannel.APP, PushChannel.SMS],
+        receiverType: ReceiverType.USER,
+        receiverIds: financeUsers.map((u) => u.userId),
+        relatedId: abnormalTasks[0].taskId,
+      });
+      pushedCount += financeUsers.length;
+    } catch (err) {
+      console.error('Failed to push fund abnormal alert:', err);
+    }
   }
 
-  return { abnormalCount: abnormalTasks.length, pushedCount };
+  const inProgressTasks = await AnnualTask.findAll({
+    where: { taskStatus: TaskStatus.IN_PROGRESS },
+  });
+
+  for (const task of inProgressTasks) {
+    try {
+      const issues = await validateFundTaskMatch(task.taskId);
+      if (issues.length > 0 && financeUsers.length > 0) {
+        pushedCount += financeUsers.length;
+      }
+    } catch (err) {
+      console.error(`Failed to validate fund timing for task ${task.taskId}:`, err);
+    }
+  }
+
+  const totalAbnormal = abnormalTasks.length + inProgressTasks.filter((t) => t.isBudgetAbnormal).length;
+  return { abnormalCount: totalAbnormal, pushedCount };
 };
 
 export const getTaskStatistics = async (

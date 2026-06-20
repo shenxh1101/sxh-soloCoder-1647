@@ -280,6 +280,10 @@ export interface ApprovalDetail extends Approval {
   attachments: ApprovalAttachment[]
   flow: ApprovalFlowStep[]
   formData: Record<string, any>
+  relatedAlert?: {
+    code: string
+    content: string
+  }
 }
 
 export interface ApprovalAttachment {

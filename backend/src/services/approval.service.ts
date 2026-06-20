@@ -5,6 +5,7 @@ import {
   User,
   Region,
   Alert,
+  GovernanceProject,
   sequelize,
 } from '../models';
 import { IApprovalWorkflowAttributes, IApprovalWorkflowCreationAttributes } from '../models/ApprovalWorkflow';
@@ -18,6 +19,7 @@ import {
   UserRole,
   UserLevel,
   AlertStatus,
+  ProjectStatus,
 } from '../models/enums';
 import { redis } from '../config';
 import { pushApprovalMessage } from './messagePush.service';
@@ -374,8 +376,22 @@ export const approveStage3 = async (
 
     if (request.result === ApprovalResult.APPROVED && workflow.relatedAlertId) {
       await Alert.update(
-        { alertStatus: AlertStatus.RESOLVED, relatedApprovalId: request.workflowId },
+        {
+          alertStatus: AlertStatus.RESOLVED,
+          relatedApprovalId: request.workflowId,
+          handleMeasure: '已通过三级审批流程',
+          handleResult: `审批编号${workflow.workflowCode}已通过：${updateData.finalResult}`,
+          handleTime: new Date(),
+          isApprovalNeeded: false,
+        },
         { where: { alertId: workflow.relatedAlertId }, transaction }
+      );
+    }
+
+    if (workflow.projectId && request.result === ApprovalResult.APPROVED) {
+      await GovernanceProject.update(
+        { projectStatus: ProjectStatus.UNDER_CONSTRUCTION },
+        { where: { projectId: workflow.projectId, projectStatus: ProjectStatus.DELAYED }, transaction }
       );
     }
 

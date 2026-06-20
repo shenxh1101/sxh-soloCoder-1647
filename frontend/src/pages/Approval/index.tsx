@@ -12,6 +12,7 @@ import {
   Typography,
   Divider,
   Steps,
+  Timeline,
   List,
   message,
   Spin,
@@ -21,7 +22,12 @@ import {
 import {
   FileTextOutlined,
   UserOutlined,
-  PaperClipOutlined
+  PaperClipOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  ClockCircleOutlined,
+  MinusCircleOutlined,
+  AlertOutlined
 } from '@ant-design/icons'
 import {
   getApprovalList,
@@ -281,6 +287,16 @@ function ApprovalPage() {
                 </Descriptions.Item>
                 <Descriptions.Item label="申请人">{detail.applicantName}</Descriptions.Item>
                 <Descriptions.Item label="申请部门">{detail.applicantDept}</Descriptions.Item>
+                <Descriptions.Item label="关联预警" span={2}>
+                  {detail.relatedAlert ? (
+                    <Space>
+                      <AlertOutlined style={{ color: '#faad14' }} />
+                      <Text>{detail.relatedAlert.code} - {detail.relatedAlert.content}</Text>
+                    </Space>
+                  ) : (
+                    <Text type="secondary">无关联预警</Text>
+                  )}
+                </Descriptions.Item>
                 <Descriptions.Item label="创建时间" span={2}>
                   {detail.createdAt}
                 </Descriptions.Item>
@@ -317,24 +333,84 @@ function ApprovalPage() {
                 direction="vertical"
                 size="small"
                 current={detail.flow.findIndex((f) => f.status === 'current') + 1}
-                items={detail.flow.map((step) => ({
-                  title: step.name,
-                  description: (
-                    <div>
-                      {step.approver && (
-                        <div>
-                          <UserOutlined /> {step.approver}
-                        </div>
-                      )}
-                      {step.opinion && <Text type="secondary">{step.opinion}</Text>}
-                      {step.time && (
-                        <div style={{ fontSize: 12, color: '#999' }}>{step.time}</div>
-                      )}
-                    </div>
-                  ),
-                  status: step.status === 'approved' ? 'finish' : step.status === 'rejected' ? 'error' : step.status === 'current' ? 'process' : 'wait'
-                }))}
+                items={detail.flow.map((step, index) => {
+                  const stageNames = ['治理单位确认', '区级主管部门复核', '市级政府批准']
+                  const stepStatus = step.status === 'approved' ? 'finish' : step.status === 'rejected' ? 'error' : step.status === 'current' ? 'process' : 'wait'
+                  const statusIconMap: Record<string, React.ReactNode> = {
+                    approved: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+                    rejected: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
+                    current: <ClockCircleOutlined style={{ color: '#1677ff' }} />,
+                    pending: <MinusCircleOutlined style={{ color: '#d9d9d9' }} />,
+                  }
+                  return {
+                    title: stageNames[index] || step.name,
+                    icon: statusIconMap[step.status],
+                    description: (
+                      <div>
+                        {step.approver && (
+                          <div>
+                            <UserOutlined /> {step.approver}
+                          </div>
+                        )}
+                        {step.opinion && <Text type="secondary">{step.opinion}</Text>}
+                        {step.time && (
+                          <div style={{ fontSize: 12, color: '#999' }}>{step.time}</div>
+                        )}
+                      </div>
+                    ),
+                    status: stepStatus,
+                  }
+                })}
               />
+
+              {detail.flow && detail.flow.length > 0 && (
+                <>
+                  <Divider orientation="left">审批历史</Divider>
+                  <Timeline
+                    items={detail.flow.map((step) => {
+                      const colorMap: Record<string, string> = {
+                        approved: 'green',
+                        rejected: 'red',
+                        current: 'blue',
+                        pending: 'gray',
+                      }
+                      const statusTextMap: Record<string, string> = {
+                        approved: '已通过',
+                        rejected: '已驳回',
+                        current: '审批中',
+                        pending: '待处理',
+                      }
+                      return {
+                        color: colorMap[step.status] || 'gray',
+                        children: (
+                          <div>
+                            <div>
+                              <Text strong>{step.name}</Text>
+                              <Tag
+                                color={step.status === 'approved' ? 'success' : step.status === 'rejected' ? 'error' : step.status === 'current' ? 'processing' : 'default'}
+                                style={{ marginLeft: 8 }}
+                              >
+                                {statusTextMap[step.status] || step.status}
+                              </Tag>
+                            </div>
+                            {step.approver && (
+                              <div style={{ marginTop: 4 }}>
+                                <UserOutlined /> {step.approver}
+                              </div>
+                            )}
+                            {step.opinion && (
+                              <div style={{ marginTop: 4, color: '#666' }}>{step.opinion}</div>
+                            )}
+                            {step.time && (
+                              <div style={{ marginTop: 4, fontSize: 12, color: '#999' }}>{step.time}</div>
+                            )}
+                          </div>
+                        ),
+                      }
+                    })}
+                  />
+                </>
+              )}
             </div>
           )}
         </Spin>

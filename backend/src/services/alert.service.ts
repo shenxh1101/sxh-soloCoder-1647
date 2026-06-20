@@ -19,9 +19,11 @@ import {
   PushStatus,
   DataQuality,
   UserRole,
+  WorkflowType,
 } from '../models/enums';
 import { redis } from '../config';
 import { pushAlertMessage } from './messagePush.service';
+import { createApprovalWorkflow } from './approval.service';
 
 export interface IAlertQuery {
   page?: number;
@@ -126,7 +128,7 @@ export const detectContinuousOverproof = async (): Promise<IAlertCreationAttribu
       alerts.push({
         alertCode: generateAlertCode(),
         alertType: AlertType.WATER_QUALITY_OVERPROOF,
-        alertLevel: nh3nConsecutive >= 5 ? AlertLevel.LEVEL_1 : AlertLevel.LEVEL_2,
+        alertLevel: AlertLevel.LEVEL_1,
         sourceType: SourceType.SEWAGE_OUTLET,
         sourceId: outlet.outletId,
         sourceCode: outlet.outletCode,
@@ -139,7 +141,7 @@ export const detectContinuousOverproof = async (): Promise<IAlertCreationAttribu
         alertTime: new Date(),
         alertStatus: AlertStatus.PENDING,
         pushStatus: PushStatus.NOT_PUSHED,
-        isApprovalNeeded: nh3nConsecutive >= 5,
+        isApprovalNeeded: true,
       });
     }
 
@@ -148,7 +150,7 @@ export const detectContinuousOverproof = async (): Promise<IAlertCreationAttribu
       alerts.push({
         alertCode: generateAlertCode(),
         alertType: AlertType.WATER_QUALITY_OVERPROOF,
-        alertLevel: tpConsecutive >= 5 ? AlertLevel.LEVEL_1 : AlertLevel.LEVEL_2,
+        alertLevel: AlertLevel.LEVEL_1,
         sourceType: SourceType.SEWAGE_OUTLET,
         sourceId: outlet.outletId,
         sourceCode: outlet.outletCode,
@@ -161,7 +163,7 @@ export const detectContinuousOverproof = async (): Promise<IAlertCreationAttribu
         alertTime: new Date(),
         alertStatus: AlertStatus.PENDING,
         pushStatus: PushStatus.NOT_PUSHED,
-        isApprovalNeeded: tpConsecutive >= 5,
+        isApprovalNeeded: true,
       });
     }
   }
@@ -197,7 +199,7 @@ export const detectProgressDelay = async (): Promise<IAlertCreationAttributes[]>
     alerts.push({
       alertCode: generateAlertCode(),
       alertType: AlertType.PROGRESS_DELAY,
-      alertLevel: deviation >= 50 ? AlertLevel.LEVEL_1 : AlertLevel.LEVEL_2,
+      alertLevel: AlertLevel.LEVEL_1,
       sourceType: SourceType.PROJECT,
       sourceId: project.projectId,
       sourceCode: project.projectCode,
@@ -210,7 +212,7 @@ export const detectProgressDelay = async (): Promise<IAlertCreationAttributes[]>
       alertTime: new Date(),
       alertStatus: AlertStatus.PENDING,
       pushStatus: PushStatus.NOT_PUSHED,
-      isApprovalNeeded: deviation >= 50,
+      isApprovalNeeded: true,
     });
   }
 
@@ -328,6 +330,15 @@ export const detectComplaintConcentration = async (): Promise<IAlertCreationAttr
   return alerts;
 };
 
+const mapAlertTypeToWorkflowType = (alertType: AlertType): WorkflowType => {
+  switch (alertType) {
+    case AlertType.WATER_QUALITY_OVERPROOF: return WorkflowType.EMERGENCY_SEWAGE_INTERCEPTION;
+    case AlertType.PROGRESS_DELAY: return WorkflowType.GOVERNANCE_PLAN_ADJUSTMENT;
+    case AlertType.FUND_ABNORMAL: return WorkflowType.FUND_ADJUSTMENT;
+    default: return WorkflowType.GOVERNANCE_PLAN_ADJUSTMENT;
+  }
+};
+
 export const detectAndCreateAlerts = async (): Promise<Alert[]> => {
   const allAlerts: IAlertCreationAttributes[] = [];
 
@@ -352,6 +363,21 @@ export const detectAndCreateAlerts = async (): Promise<Alert[]> => {
       await pushAlertMessage(alert);
     } catch (err) {
       console.error('Failed to push alert message:', err);
+    }
+
+    if (alert.isApprovalNeeded && alert.regionId) {
+      try {
+        await createApprovalWorkflow({
+          workflowType: mapAlertTypeToWorkflowType(alert.alertType),
+          relatedAlertId: alert.alertId,
+          regionId: alert.regionId,
+          applicationContent: alert.alertContent,
+          applicationReason: alert.triggerCondition || '一级预警自动触发',
+          proposedScheme: '待治理单位确认后制定',
+        }, { userId: 0, username: 'system', department: '系统自动' });
+      } catch (err) {
+        console.error('Failed to create approval workflow for alert:', err);
+      }
     }
   }
 
