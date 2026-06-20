@@ -10,7 +10,7 @@ import type {
 
 export function getApprovalList(params: ApprovalListParams): Promise<PageResult<Approval>> {
   return request<PageResult<Approval>>({
-    url: '/api/approval/list',
+    url: '/api/approval',
     method: 'get',
     params
   })
@@ -28,6 +28,22 @@ export function submitApproval(data: ApprovalSubmitParams): Promise<Approval> {
     url: '/api/approval',
     method: 'post',
     data
+  })
+}
+
+export function approveStage(params: ApprovalHandleParams & { stage: number }): Promise<void> {
+  return request<void>({
+    url: `/api/approval/${params.id}/approve/stage${params.stage}`,
+    method: 'put',
+    data: { opinion: params.opinion, result: 1 }
+  })
+}
+
+export function rejectStage(params: ApprovalHandleParams & { stage: number }): Promise<void> {
+  return request<void>({
+    url: `/api/approval/${params.id}/approve/stage${params.stage}`,
+    method: 'put',
+    data: { opinion: params.opinion, result: 2 }
   })
 }
 

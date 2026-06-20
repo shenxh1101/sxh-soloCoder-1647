@@ -1,74 +1,49 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { Card, Radio, DatePicker, Space, Checkbox, Spin } from 'antd'
 import ReactECharts from 'echarts-for-react'
-import { getTrendData } from '@/api/stats'
-import type { TrendData, StatsFilterParams } from '@/types'
+import type { DashboardStats } from '@/types'
 import dayjs, { Dayjs } from 'dayjs'
 
 const { RangePicker } = DatePicker
 
 interface TrendChartProps {
-  filterParams?: StatsFilterParams
+  data?: DashboardStats['trend']
+  loading?: boolean
+  onTimeRangeChange?: (days: number, startDate?: string, endDate?: string) => void
 }
 
 type TimeRange = '7' | '30' | '90' | 'custom'
 
+type TrendItem = DashboardStats['trend'][number]
+
 interface IndicatorConfig {
-  key: keyof TrendData['days'][0]
+  key: keyof Omit<TrendItem, 'date'>
   name: string
   color: string
   unit: string
 }
 
 const INDICATORS: IndicatorConfig[] = [
-  { key: 'qualifiedRate', name: '水质达标率', color: '#52c41a', unit: '%' },
-  { key: 'completionRate', name: '治理完成率', color: '#1890ff', unit: '%' },
-  { key: 'satisfaction', name: '公众满意度', color: '#722ed1', unit: '%' },
-  { key: 'abnormalIndex', name: '排污口异常指数', color: '#fa8c16', unit: '' }
+  { key: 'waterQualityComplianceRate', name: '水质达标率', color: '#52c41a', unit: '%' },
+  { key: 'governanceCompletionRate', name: '治理完成率', color: '#1890ff', unit: '%' },
+  { key: 'publicSatisfaction', name: '公众满意度', color: '#722ed1', unit: '%' },
+  { key: 'outletAbnormalityIndex', name: '排污口异常指数', color: '#fa8c16', unit: '' }
 ]
 
-function TrendChart({ filterParams }: TrendChartProps) {
-  const [loading, setLoading] = useState(false)
-  const [data, setData] = useState<TrendData | null>(null)
+function TrendChart({ data = [], loading, onTimeRangeChange }: TrendChartProps) {
   const [timeRange, setTimeRange] = useState<TimeRange>('30')
   const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null)
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>([
-    'qualifiedRate',
-    'completionRate',
-    'satisfaction',
-    'abnormalIndex'
+    'waterQualityComplianceRate',
+    'governanceCompletionRate',
+    'publicSatisfaction',
+    'outletAbnormalityIndex'
   ])
 
-  useEffect(() => {
-    fetchData()
-  }, [filterParams, timeRange, customRange])
-
-  const fetchData = async () => {
-    setLoading(true)
-    try {
-      let days = parseInt(timeRange)
-      let params: StatsFilterParams & { days?: number; startDate?: string; endDate?: string } = {
-        ...filterParams
-      }
-
-      if (timeRange === 'custom' && customRange) {
-        params.startDate = customRange[0].format('YYYY-MM-DD')
-        params.endDate = customRange[1].format('YYYY-MM-DD')
-      } else {
-        params.days = days
-      }
-
-      const result = await getTrendData(params)
-      setData(result)
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const chartOption = useMemo(() => {
-    if (!data) return {}
+    if (!data || data.length === 0) return {}
 
-    const dates = data.days.map((item) => item.date)
+    const dates = data.map((item) => item.date)
     const selectedConfig = INDICATORS.filter((item) => selectedIndicators.includes(item.key))
 
     const series = selectedConfig.map((indicator) => ({
@@ -97,7 +72,7 @@ function TrendChart({ filterParams }: TrendChartProps) {
           ]
         }
       },
-      data: data.days.map((item) => item[indicator.key as keyof typeof item])
+      data: data.map((item) => item[indicator.key])
     }))
 
     return {
@@ -170,6 +145,23 @@ function TrendChart({ filterParams }: TrendChartProps) {
     }
   }, [data, selectedIndicators])
 
+  const handleTimeRangeChange = (value: TimeRange) => {
+    setTimeRange(value)
+    if (value !== 'custom') {
+      onTimeRangeChange?.(parseInt(value))
+    }
+  }
+
+  const handleCustomRangeChange = (dates: any) => {
+    setCustomRange(dates as [Dayjs, Dayjs])
+    if (dates && dates[0] && dates[1]) {
+      const startDate = dates[0].format('YYYY-MM-DD')
+      const endDate = dates[1].format('YYYY-MM-DD')
+      const days = dates[1].diff(dates[0], 'day') + 1
+      onTimeRangeChange?.(days, startDate, endDate)
+    }
+  }
+
   const handleIndicatorChange = (checkedValues: string[]) => {
     setSelectedIndicators(checkedValues)
   }
@@ -180,7 +172,7 @@ function TrendChart({ filterParams }: TrendChartProps) {
       loading={loading}
       extra={
         <Space wrap>
-          <Radio.Group value={timeRange} onChange={(e) => setTimeRange(e.target.value)} size="small">
+          <Radio.Group value={timeRange} onChange={(e) => handleTimeRangeChange(e.target.value)} size="small">
             <Radio.Button value="7">近7天</Radio.Button>
             <Radio.Button value="30">近30天</Radio.Button>
             <Radio.Button value="90">近90天</Radio.Button>
@@ -189,7 +181,7 @@ function TrendChart({ filterParams }: TrendChartProps) {
           {timeRange === 'custom' && (
             <RangePicker
               value={customRange}
-              onChange={(dates) => setCustomRange(dates as [Dayjs, Dayjs])}
+              onChange={handleCustomRangeChange}
               size="small"
               disabledDate={(current) => current && current > dayjs().endOf('day')}
             />

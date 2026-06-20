@@ -9,8 +9,11 @@ import {
   ComplaintOrder,
   AnnualTask,
   User,
+  OperationLog,
+  ApprovalWorkflow,
 } from '../models';
 import { IAlertAttributes, IAlertCreationAttributes } from '../models/Alert';
+import { IUserAttributes } from '../models/User';
 import {
   AlertType,
   AlertLevel,
@@ -20,6 +23,7 @@ import {
   DataQuality,
   UserRole,
   WorkflowType,
+  UserLevel,
 } from '../models/enums';
 import { redis } from '../config';
 import { pushAlertMessage } from './messagePush.service';
@@ -89,24 +93,53 @@ export const detectContinuousOverproof = async (): Promise<IAlertCreationAttribu
       order: [['monitorTime', 'ASC']],
     });
 
-    if (dailyData.length < consecutiveDays) continue;
+    const dailyStats = new Map<string, { nh3nOverproof: boolean; tpOverproof: boolean; maxNh3n: number; maxTp: number }>();
+
+    for (const data of dailyData) {
+      const dateKey = data.monitorTime.toISOString().split('T')[0];
+
+      if (!dailyStats.has(dateKey)) {
+        dailyStats.set(dateKey, {
+          nh3nOverproof: false,
+          tpOverproof: false,
+          maxNh3n: 0,
+          maxTp: 0
+        });
+      }
+
+      const dayStat = dailyStats.get(dateKey)!;
+      if (data.isNh3nOverproof) {
+        dayStat.nh3nOverproof = true;
+        dayStat.maxNh3n = Math.max(dayStat.maxNh3n, data.ammoniaNitrogen || 0);
+      }
+      if (data.isTpOverproof) {
+        dayStat.tpOverproof = true;
+        dayStat.maxTp = Math.max(dayStat.maxTp, data.totalPhosphorus || 0);
+      }
+    }
+
+    const sortedDates = Array.from(dailyStats.keys()).sort();
+
+    if (sortedDates.length < consecutiveDays) continue;
 
     let nh3nConsecutive = 0;
     let tpConsecutive = 0;
     let maxNh3nValue = 0;
     let maxTpValue = 0;
 
-    for (const data of dailyData) {
-      if (data.isNh3nOverproof) {
+    for (const dateKey of sortedDates) {
+      const dayStat = dailyStats.get(dateKey)!;
+
+      if (dayStat.nh3nOverproof) {
         nh3nConsecutive++;
-        maxNh3nValue = Math.max(maxNh3nValue, data.ammoniaNitrogen || 0);
+        maxNh3nValue = Math.max(maxNh3nValue, dayStat.maxNh3n);
       } else {
         nh3nConsecutive = 0;
       }
 
-      if (data.isTpOverproof) {
+      if (dayStat.tpOverproof) {
         tpConsecutive++;
-        maxTpValue = Math.max(maxTpValue, data.totalPhosphorus || 0);
+        maxTpValue = Math.max(maxTpValue, dayStat.maxTp);
       } else {
         tpConsecutive = 0;
       }
@@ -134,10 +167,10 @@ export const detectContinuousOverproof = async (): Promise<IAlertCreationAttribu
         sourceCode: outlet.outletCode,
         sourceName: outlet.outletName,
         regionId: outlet.waterBody?.regionId,
-        triggerCondition: `连续${nh3nConsecutive}天氨氮超标`,
+        triggerCondition: `连续${nh3nConsecutive}个自然日氨氮超标`,
         triggerValue: maxNh3nValue,
         thresholdValue: threshold,
-        alertContent: `排污口【${outlet.outletName}】已连续${nh3nConsecutive}天氨氮超标，最大值为${maxNh3nValue}mg/L，超过标准值${threshold}mg/L`,
+        alertContent: `排污口【${outlet.outletName}】已连续${nh3nConsecutive}个自然日氨氮超标，最大值为${maxNh3nValue}mg/L，超过标准值${threshold}mg/L`,
         alertTime: new Date(),
         alertStatus: AlertStatus.PENDING,
         pushStatus: PushStatus.NOT_PUSHED,
@@ -156,10 +189,10 @@ export const detectContinuousOverproof = async (): Promise<IAlertCreationAttribu
         sourceCode: outlet.outletCode,
         sourceName: outlet.outletName,
         regionId: outlet.waterBody?.regionId,
-        triggerCondition: `连续${tpConsecutive}天总磷超标`,
+        triggerCondition: `连续${tpConsecutive}个自然日总磷超标`,
         triggerValue: maxTpValue,
         thresholdValue: threshold,
-        alertContent: `排污口【${outlet.outletName}】已连续${tpConsecutive}天总磷超标，最大值为${maxTpValue}mg/L，超过标准值${threshold}mg/L`,
+        alertContent: `排污口【${outlet.outletName}】已连续${tpConsecutive}个自然日总磷超标，最大值为${maxTpValue}mg/L，超过标准值${threshold}mg/L`,
         alertTime: new Date(),
         alertStatus: AlertStatus.PENDING,
         pushStatus: PushStatus.NOT_PUSHED,
@@ -182,8 +215,12 @@ export const detectProgressDelay = async (): Promise<IAlertCreationAttributes[]>
   });
 
   for (const project of projects) {
-    const deviation = Math.abs(project.progressDeviation || 0);
+    const actualProgress = project.actualProgress || 0;
+    const plannedProgress = project.plannedProgress || 0;
+    const deviation = plannedProgress - actualProgress;
+
     if (deviation < deviationThreshold) continue;
+    if (actualProgress > plannedProgress) continue;
 
     const existingAlert = await Alert.findOne({
       where: {
@@ -205,10 +242,10 @@ export const detectProgressDelay = async (): Promise<IAlertCreationAttributes[]>
       sourceCode: project.projectCode,
       sourceName: project.projectName,
       regionId: project.waterBody?.regionId,
-      triggerCondition: `进度偏差超过${deviationThreshold}%`,
+      triggerCondition: `实际进度落后计划${deviation.toFixed(1)}%`,
       triggerValue: deviation,
       thresholdValue: deviationThreshold,
-      alertContent: `项目【${project.projectName}】进度偏差${deviation}%，超过阈值${deviationThreshold}%，当前实际进度${project.actualProgress}%，计划进度${project.plannedProgress}%`,
+      alertContent: `项目【${project.projectName}】实际进度${actualProgress}%，计划进度${plannedProgress}%，进度落后${deviation.toFixed(1)}%，超过阈值${deviationThreshold}%`,
       alertTime: new Date(),
       alertStatus: AlertStatus.PENDING,
       pushStatus: PushStatus.NOT_PUSHED,
@@ -386,33 +423,112 @@ export const detectAndCreateAlerts = async (): Promise<Alert[]> => {
   return createdAlerts;
 };
 
+const mapAlertLevel = (level: AlertLevel): string => {
+  switch (level) {
+    case AlertLevel.LEVEL_1: return 'critical';
+    case AlertLevel.LEVEL_2: return 'high';
+    case AlertLevel.LEVEL_3: return 'medium';
+    default: return 'low';
+  }
+};
+
+const mapAlertType = (type: AlertType): string => {
+  switch (type) {
+    case AlertType.WATER_QUALITY_OVERPROOF: return 'water_quality';
+    case AlertType.PROGRESS_DELAY: return 'project';
+    case AlertType.FUND_ABNORMAL: return 'fund';
+    case AlertType.COMPLAINT_CONCENTRATION: return 'complaint';
+    default: return 'water_quality';
+  }
+};
+
+const mapAlertStatus = (status: AlertStatus): string => {
+  switch (status) {
+    case AlertStatus.PENDING: return 'pending';
+    case AlertStatus.PROCESSING: return 'processing';
+    case AlertStatus.PROCESSED: return 'processing';
+    case AlertStatus.RESOLVED: return 'resolved';
+    case AlertStatus.IGNORED: return 'closed';
+    default: return 'pending';
+  }
+};
+
+const transformAlertToFrontend = (alert: any) => {
+  const json = alert && typeof alert.toJSON === 'function' ? alert.toJSON() : alert;
+  return {
+    id: json.alertId,
+    code: json.alertCode,
+    title: json.alertContent,
+    level: mapAlertLevel(json.alertLevel),
+    type: mapAlertType(json.alertType),
+    waterBodyId: json.sourceId,
+    waterBodyName: json.sourceName,
+    description: json.alertContent,
+    triggerCondition: json.triggerCondition,
+    triggerValue: json.triggerValue,
+    thresholdValue: json.thresholdValue,
+    status: mapAlertStatus(json.alertStatus),
+    handlerName: json.handlerPerson,
+    handleTime: json.handleTime,
+    handleResult: json.handleResult,
+    regionId: json.regionId,
+    regionName: json.region?.regionName,
+    createdAt: json.alertTime,
+    updatedAt: json.updatedAt,
+  };
+};
+
 export const getAlertList = async (
-  query: IAlertQuery,
-  currentUserId?: number
-): Promise<{ rows: IAlertAttributes[]; count: number }> => {
+  query: {
+    page?: number;
+    pageSize?: number;
+    alertLevel?: AlertLevel;
+    alertType?: AlertType;
+    alertStatus?: AlertStatus;
+    keyword?: string;
+    startDate?: string;
+    endDate?: string;
+    regionId?: number;
+  },
+  currentUser: IUserAttributes
+): Promise<{ rows: any[]; count: number }> => {
   const {
     page = 1,
     pageSize = 10,
-    alertType,
     alertLevel,
+    alertType,
     alertStatus,
-    regionId,
-    sourceType,
-    sourceId,
+    keyword,
     startDate,
     endDate,
+    regionId,
   } = query;
 
   const where: any = {};
 
-  if (alertType !== undefined) where.alertType = alertType;
   if (alertLevel !== undefined) where.alertLevel = alertLevel;
+  if (alertType !== undefined) where.alertType = alertType;
   if (alertStatus !== undefined) where.alertStatus = alertStatus;
   if (regionId !== undefined) where.regionId = regionId;
-  if (sourceType !== undefined) where.sourceType = sourceType;
-  if (sourceId !== undefined) where.sourceId = sourceId;
+  if (keyword) {
+    where.alertContent = { [Op.like]: `%${keyword}%` };
+  }
   if (startDate && endDate) {
     where.alertTime = { [Op.between]: [new Date(startDate), new Date(endDate)] };
+  }
+
+  if (currentUser.userLevel === UserLevel.PROVINCIAL) {
+    const region = await Region.findByPk(currentUser.regionId);
+    if (region) {
+      const subRegions = await Region.findAll({
+        where: { parentId: currentUser.regionId },
+        attributes: ['regionId'],
+      });
+      const regionIds = [currentUser.regionId, ...subRegions.map(r => r.regionId)];
+      where.regionId = { [Op.in]: regionIds };
+    }
+  } else if (currentUser.userLevel === UserLevel.MUNICIPAL) {
+    where.regionId = currentUser.regionId;
   }
 
   const options: FindOptions = {
@@ -425,25 +541,80 @@ export const getAlertList = async (
     ],
   };
 
-  const cacheKey = `${CACHE_PREFIX}list:${JSON.stringify(query)}:${currentUserId || ''}`;
-  try {
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      return JSON.parse(cached);
-    }
-  } catch (err) {
-    console.error('Cache read error:', err);
-  }
-
   const { rows, count } = await Alert.findAndCountAll(options);
 
-  try {
-    await redis.setex(cacheKey, CACHE_TTL, JSON.stringify({ rows, count }));
-  } catch (err) {
-    console.error('Cache write error:', err);
+  const transformedRows = rows.map(row => transformAlertToFrontend(row));
+
+  return { rows: transformedRows, count };
+};
+
+export const getAlertDetail = async (
+  alertId: number,
+  currentUser: IUserAttributes
+): Promise<any | null> => {
+  const alert = await Alert.findByPk(alertId, {
+    include: [
+      { model: Region, as: 'region', attributes: ['regionId', 'regionName'] },
+    ],
+  });
+
+  if (!alert) return null;
+
+  const alertJson = alert.toJSON();
+
+  if (currentUser.userLevel === UserLevel.PROVINCIAL) {
+    const region = await Region.findByPk(currentUser.regionId);
+    if (region) {
+      const subRegions = await Region.findAll({
+        where: { parentId: currentUser.regionId },
+        attributes: ['regionId'],
+      });
+      const regionIds = [currentUser.regionId, ...subRegions.map(r => r.regionId)];
+      if (!regionIds.includes(alertJson.regionId!)) {
+        return null;
+      }
+    }
+  } else if (currentUser.userLevel === UserLevel.MUNICIPAL) {
+    if (alertJson.regionId !== currentUser.regionId) {
+      return null;
+    }
   }
 
-  return { rows: rows.map((r) => r.toJSON()), count };
+  const operationLogs = await OperationLog.findAll({
+    where: {
+      moduleName: 'alert',
+      operationContent: { [Op.like]: `%${alertId}%` },
+    },
+    order: [['operationTime', 'DESC']],
+    limit: 50,
+  });
+
+  const history = operationLogs.map(log => ({
+    id: log.logId,
+    operator: log.username || '系统',
+    action: log.operationType,
+    remark: log.operationContent,
+    time: log.operationTime,
+  }));
+
+  const approval = await ApprovalWorkflow.findOne({
+    where: { relatedAlertId: alertId },
+    attributes: ['workflowId', 'workflowCode', 'currentStage', 'workflowStatus'],
+  });
+
+  const approvalInfo = approval ? {
+    workflowId: approval.workflowId,
+    workflowCode: approval.workflowCode,
+    currentStage: approval.currentStage,
+    workflowStatus: approval.workflowStatus,
+  } : undefined;
+
+  const result = transformAlertToFrontend(alertJson);
+  return {
+    ...result,
+    history,
+    approvalInfo,
+  };
 };
 
 export const getAlertById = async (alertId: number): Promise<IAlertAttributes | null> => {
@@ -593,6 +764,7 @@ export default {
   detectComplaintConcentration,
   detectAndCreateAlerts,
   getAlertList,
+  getAlertDetail,
   getAlertById,
   handleAlert,
   resolveAlert,

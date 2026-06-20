@@ -3,18 +3,48 @@ import Joi from 'joi';
 import { authenticate } from '../middleware/auth';
 import {
   getAlertList,
+  getAlertDetail,
   getAlertById,
   handleAlert,
   resolveAlert,
   ignoreAlert,
   getAlertStatistics,
   detectAndCreateAlerts,
-  IAlertQuery,
   IAlertHandleRequest,
 } from '../services/alert.service';
 import { getFullUserById } from '../services/auth.service';
 import { success, error, paginate } from '../utils/response';
-import { AlertType, AlertLevel, AlertStatus, SourceType } from '../models/enums';
+import { AlertType, AlertLevel, AlertStatus, SourceType, UserLevel } from '../models/enums';
+
+const mapFrontendLevelToBackend = (level: string): AlertLevel | undefined => {
+  switch (level) {
+    case 'critical': return AlertLevel.LEVEL_1;
+    case 'high': return AlertLevel.LEVEL_2;
+    case 'medium': return AlertLevel.LEVEL_3;
+    case 'low': return AlertLevel.LEVEL_3;
+    default: return undefined;
+  }
+};
+
+const mapFrontendTypeToBackend = (type: string): AlertType | undefined => {
+  switch (type) {
+    case 'water_quality': return AlertType.WATER_QUALITY_OVERPROOF;
+    case 'project': return AlertType.PROGRESS_DELAY;
+    case 'fund': return AlertType.FUND_ABNORMAL;
+    case 'complaint': return AlertType.COMPLAINT_CONCENTRATION;
+    default: return undefined;
+  }
+};
+
+const mapFrontendStatusToBackend = (status: string): AlertStatus | undefined => {
+  switch (status) {
+    case 'pending': return AlertStatus.PENDING;
+    case 'processing': return AlertStatus.PROCESSING;
+    case 'resolved': return AlertStatus.RESOLVED;
+    case 'closed': return AlertStatus.IGNORED;
+    default: return undefined;
+  }
+};
 
 const router = Router();
 
@@ -49,20 +79,19 @@ router.get('/', authenticate, async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    const query: IAlertQuery = {
+    const query = {
       page: parseInt(req.query.page as string) || 1,
       pageSize: parseInt(req.query.pageSize as string) || 20,
-      alertType: req.query.alertType ? (req.query.alertType as unknown as AlertType) : undefined,
-      alertLevel: req.query.alertLevel ? (req.query.alertLevel as unknown as AlertLevel) : undefined,
-      alertStatus: req.query.alertStatus ? (req.query.alertStatus as unknown as AlertStatus) : undefined,
-      regionId: req.query.regionId ? parseInt(req.query.regionId as string) : undefined,
-      sourceType: req.query.sourceType ? (req.query.sourceType as unknown as SourceType) : undefined,
-      sourceId: req.query.sourceId ? parseInt(req.query.sourceId as string) : undefined,
+      alertLevel: req.query.level ? mapFrontendLevelToBackend(req.query.level as string) : undefined,
+      alertType: req.query.type ? mapFrontendTypeToBackend(req.query.type as string) : undefined,
+      alertStatus: req.query.status ? mapFrontendStatusToBackend(req.query.status as string) : undefined,
+      keyword: req.query.keyword as string,
       startDate: req.query.startDate as string,
       endDate: req.query.endDate as string,
+      regionId: req.query.regionId ? parseInt(req.query.regionId as string) : undefined,
     };
 
-    const { rows, count } = await getAlertList(query, currentUser.userId);
+    const { rows, count } = await getAlertList(query, currentUser);
 
     paginate(res, rows, query.page!, query.pageSize!, count, '获取预警列表成功');
   } catch (err) {
@@ -104,13 +133,19 @@ router.get('/:id', authenticate, async (req: Request, res: Response): Promise<vo
       return;
     }
 
+    const currentUser = await getFullUserById(req.user.userId);
+    if (!currentUser) {
+      error(res, '用户不存在', 404);
+      return;
+    }
+
     const alertId = parseInt(req.params.id);
     if (isNaN(alertId)) {
       error(res, '无效的预警ID', 400);
       return;
     }
 
-    const alert = await getAlertById(alertId);
+    const alert = await getAlertDetail(alertId, currentUser);
     if (!alert) {
       error(res, '预警不存在', 404);
       return;

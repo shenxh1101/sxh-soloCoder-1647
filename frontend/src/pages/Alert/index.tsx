@@ -18,7 +18,8 @@ import {
   List,
   message,
   Spin,
-  Descriptions
+  Descriptions,
+  Alert as AntAlert
 } from 'antd'
 import {
   WarningOutlined,
@@ -54,17 +55,18 @@ function AlertPage() {
   const [filterForm] = Form.useForm()
 
   const levelMap: Record<string, { color: string; text: string }> = {
-    low: { color: 'blue', text: '低' },
-    medium: { color: 'gold', text: '中' },
-    high: { color: 'orange', text: '高' },
-    critical: { color: 'red', text: '严重' }
+    low: { color: 'blue', text: '三级预警' },
+    medium: { color: 'gold', text: '二级预警' },
+    high: { color: 'orange', text: '二级预警' },
+    critical: { color: 'red', text: '一级预警' }
   }
 
   const typeMap: Record<string, string> = {
-    water_quality: '水质异常',
+    water_quality: '水质超标',
     outlet: '排污口异常',
-    project: '项目异常',
-    complaint: '投诉预警'
+    project: '进度滞后',
+    fund: '资金异常',
+    complaint: '投诉集中'
   }
 
   const statusMap: Record<string, { color: string; text: string; icon: React.ReactNode }> = {
@@ -77,7 +79,7 @@ function AlertPage() {
   useEffect(() => {
     fetchData()
     fetchStats()
-  }, [])
+  }, [pagination.current, pagination.pageSize])
 
   const fetchData = async (params?: Partial<AlertListParams>) => {
     setLoading(true)
@@ -322,18 +324,17 @@ function AlertPage() {
           </Form.Item>
           <Form.Item name="level" label="预警级别">
             <Select placeholder="请选择" style={{ width: 140 }} allowClear>
-              <Option value="low">低</Option>
-              <Option value="medium">中</Option>
-              <Option value="high">高</Option>
-              <Option value="critical">严重</Option>
+              <Option value="critical">一级预警</Option>
+              <Option value="high">二级预警</Option>
+              <Option value="medium">三级预警</Option>
             </Select>
           </Form.Item>
           <Form.Item name="type" label="预警类型">
             <Select placeholder="请选择" style={{ width: 140 }} allowClear>
-              <Option value="water_quality">水质异常</Option>
-              <Option value="outlet">排污口异常</Option>
-              <Option value="project">项目异常</Option>
-              <Option value="complaint">投诉预警</Option>
+              <Option value="water_quality">水质超标</Option>
+              <Option value="project">进度滞后</Option>
+              <Option value="fund">资金异常</Option>
+              <Option value="complaint">投诉集中</Option>
             </Select>
           </Form.Item>
           <Form.Item name="status" label="状态">
@@ -411,6 +412,14 @@ function AlertPage() {
                 <Descriptions.Item label="处理人">{detail.handlerName || '-'}</Descriptions.Item>
                 <Descriptions.Item label="创建时间" span={2}>
                   {detail.createdAt}
+                </Descriptions.Item>
+                <Descriptions.Item label="触发原因" span={2}>
+                  <AntAlert
+                    type="warning"
+                    showIcon
+                    message={detail.triggerCondition || '未记录触发原因'}
+                    description={`触发值: ${detail.triggerValue || '-'}，阈值: ${detail.thresholdValue || '-'}`}
+                  />
                 </Descriptions.Item>
                 <Descriptions.Item label="预警描述" span={2}>
                   {detail.description}

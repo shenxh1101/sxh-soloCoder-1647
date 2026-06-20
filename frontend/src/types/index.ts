@@ -202,13 +202,16 @@ export interface Alert {
   code: string
   title: string
   level: 'low' | 'medium' | 'high' | 'critical'
-  type: 'water_quality' | 'outlet' | 'project' | 'complaint'
+  type: 'water_quality' | 'outlet' | 'project' | 'fund' | 'complaint'
   waterBodyId: number
   waterBodyName: string
   description: string
   indicator?: string
   threshold?: number
   currentValue?: number
+  triggerCondition?: string
+  triggerValue?: number
+  thresholdValue?: number
   status: 'pending' | 'processing' | 'resolved' | 'closed'
   handlerId?: number
   handlerName?: string
@@ -220,6 +223,12 @@ export interface Alert {
 
 export interface AlertDetail extends Alert {
   history: AlertHistory[]
+  approvalInfo?: {
+    workflowId: number
+    workflowCode: string
+    currentStage: number
+    workflowStatus?: number
+  }
 }
 
 export interface AlertHistory {
@@ -281,8 +290,11 @@ export interface ApprovalDetail extends Approval {
   flow: ApprovalFlowStep[]
   formData: Record<string, any>
   relatedAlert?: {
+    alertId: number
     code: string
     content: string
+    level: string
+    status: string
   }
 }
 
@@ -691,4 +703,51 @@ export interface Attachment {
   url: string
   size: number
   uploadTime: string
+}
+
+export interface DashboardStats {
+  overview: {
+    waterQualityComplianceRate: number
+    governanceCompletionRate: number
+    publicSatisfaction: number
+    outletAbnormalityIndex: number
+    yearOnYear: {
+      waterQualityComplianceRate: number
+      governanceCompletionRate: number
+      publicSatisfaction: number
+      outletAbnormalityIndex: number
+    }
+    monthOnMonth: {
+      waterQualityComplianceRate: number
+      governanceCompletionRate: number
+      publicSatisfaction: number
+      outletAbnormalityIndex: number
+    }
+    summary: {
+      totalWaterBodies: number
+      totalOutlets: number
+      totalProjects: number
+      totalComplaints: number
+      activeAlerts: number
+    }
+  }
+  regionList: Array<{
+    regionName: string
+    regionCode: string
+    waterQualityComplianceRate: number
+    governanceCompletionRate: number
+    publicSatisfaction: number
+    waterBodyCount: number
+    qualifiedWaterBodyCount: number
+    projectCount: number
+    level?: 'province' | 'city'
+    provinceName?: string
+  }>
+  trend: Array<{
+    date: string
+    waterQualityComplianceRate: number
+    governanceCompletionRate: number
+    publicSatisfaction: number
+    outletAbnormalityIndex: number
+  }>
 }

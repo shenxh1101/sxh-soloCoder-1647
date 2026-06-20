@@ -27,18 +27,21 @@ import {
   CloseCircleOutlined,
   ClockCircleOutlined,
   MinusCircleOutlined,
-  AlertOutlined
+  WarningOutlined
 } from '@ant-design/icons'
 import {
   getApprovalList,
   getApprovalDetail,
-  approve,
-  reject
+  approveStage,
+  rejectStage
 } from '@/api/approval'
+import useUserStore from '@/store/userStore'
 import type { Approval, ApprovalDetail, ApprovalListParams } from '@/types'
 
 const { Title, Text, Paragraph } = Typography
 const { TextArea } = Input
+
+const stepNames = ['治理单位确认', '区级主管部门复核', '市级政府批准']
 
 function ApprovalPage() {
   const [loading, setLoading] = useState(false)
@@ -48,11 +51,16 @@ function ApprovalPage() {
   const [detailVisible, setDetailVisible] = useState(false)
   const [handleVisible, setHandleVisible] = useState(false)
   const [handleType, setHandleType] = useState<'approve' | 'reject'>('approve')
-  const [activeTab, setActiveTab] = useState('pending')
+  const [activeTab, setActiveTab] = useState<'pending' | 'initiated' | 'all'>('pending')
   const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 })
   const [form] = Form.useForm()
+  useUserStore()
 
   const typeMap: Record<string, string> = {
+    governance_plan_adjustment: '方案调整审批',
+    emergency_sewage_interception: '应急截污审批',
+    project_delay: '项目延期审批',
+    fund_adjustment: '资金调整审批',
     project: '项目审批',
     fund: '资金审批',
     plan: '计划审批',
@@ -76,7 +84,7 @@ function ApprovalPage() {
       const result = await getApprovalList({
         pageNum: pagination.current,
         pageSize: pagination.pageSize,
-        tab: activeTab as 'pending' | 'initiated' | 'all',
+        tab: activeTab,
         ...params
       })
       setData(result.list)
@@ -102,7 +110,34 @@ function ApprovalPage() {
     fetchData({ pageNum: page, pageSize })
   }
 
+  const getCurrentStage = (record: Approval | ApprovalDetail): number => {
+    return record.currentStep || 1
+  }
+
+  const canApprove = (record: Approval | ApprovalDetail): boolean => {
+    if (record.status !== 'pending' && record.status !== 'processing') {
+      return false
+    }
+    const currentStage = getCurrentStage(record)
+    const flowStep = detail?.flow?.find((f) => f.step === currentStage)
+    if (!flowStep) return false
+    return flowStep.status === 'current'
+  }
+
+  const getApprovalStageText = (currentStep: number): string => {
+    const stageMap: Record<number, string> = {
+      1: '治理单位',
+      2: '区级主管部门',
+      3: '市级政府'
+    }
+    return stageMap[currentStep] || '相关部门'
+  }
+
   const openHandleModal = (record: Approval, type: 'approve' | 'reject') => {
+    if (!canApprove(record)) {
+      message.warning(`当前不是您的审批阶段，待${getApprovalStageText(getCurrentStage(record))}审批`)
+      return
+    }
     setDetail(record as ApprovalDetail)
     setHandleType(type)
     form.setFieldsValue({
@@ -114,15 +149,34 @@ function ApprovalPage() {
 
   const handleSubmit = async (values: any) => {
     try {
+      const currentStage = getCurrentStage(detail!)
       if (handleType === 'approve') {
-        await approve({ id: values.id, opinion: values.opinion, pass: true })
-        message.success('审批通过成功')
+        await approveStage({ 
+          id: values.id, 
+          opinion: values.opinion, 
+          pass: true,
+          stage: currentStage
+        })
+        const isFinalStage = currentStage === 3
+        if (isFinalStage && detail?.relatedAlert) {
+          message.success('审批通过，预警状态已同步更新为"已解决"')
+        } else {
+          message.success('审批通过成功，已推送至下一级审批人')
+        }
       } else {
-        await reject({ id: values.id, opinion: values.opinion, pass: false })
+        await rejectStage({ 
+          id: values.id, 
+          opinion: values.opinion, 
+          pass: false,
+          stage: currentStage
+        })
         message.success('审批驳回成功')
       }
       setHandleVisible(false)
       fetchData()
+      if (detailVisible) {
+        fetchDetail(values.id)
+      }
     } catch (error) {
       message.error('操作失败')
     }
@@ -145,8 +199,28 @@ function ApprovalPage() {
       title: '审批类型',
       dataIndex: 'type',
       key: 'type',
-      width: 100,
-      render: (type: string) => typeMap[type] || type
+      width: 120,
+      render: (type: string | number) => {
+        const typeStr = String(type)
+        return typeMap[typeStr] || typeStr
+      }
+    },
+    {
+      title: '关联预警',
+      dataIndex: 'relatedAlert',
+      key: 'relatedAlert',
+      width: 150,
+      render: (alert: any) => {
+        if (alert) {
+          return (
+            <Space>
+              <WarningOutlined style={{ color: '#fa8c16' }} />
+              <Tag color="red">{alert.level}</Tag>
+            </Space>
+          )
+        }
+        return <Text type="secondary">-</Text>
+      }
     },
     {
       title: '申请人',
@@ -205,23 +279,31 @@ function ApprovalPage() {
       title: '操作',
       key: 'action',
       width: 180,
-      render: (_: any, record: Approval) => (
-        <Space>
-          <Button type="link" size="small" onClick={() => fetchDetail(record.id)}>
-            详情
-          </Button>
-          {activeTab === 'pending' && record.status === 'pending' && (
-            <>
-              <Button type="primary" size="small" onClick={() => openHandleModal(record, 'approve')}>
-                通过
+      render: (_: any, record: Approval) => {
+        const canHandle = canApprove(record)
+        return (
+          <Space>
+            <Button type="link" size="small" onClick={() => fetchDetail(record.id)}>
+              详情
+            </Button>
+            {canHandle && (
+              <>
+                <Button type="primary" size="small" onClick={() => openHandleModal(record, 'approve')}>
+                  通过
+                </Button>
+                <Button danger size="small" onClick={() => openHandleModal(record, 'reject')}>
+                  驳回
+                </Button>
+              </>
+            )}
+            {!canHandle && activeTab === 'pending' && record.status !== 'approved' && record.status !== 'rejected' && (
+              <Button size="small" disabled>
+                待{getApprovalStageText(getCurrentStage(record))}审批
               </Button>
-              <Button danger size="small" onClick={() => openHandleModal(record, 'reject')}>
-                驳回
-              </Button>
-            </>
-          )}
-        </Space>
-      )
+            )}
+          </Space>
+        )
+      }
     }
   ]
 
@@ -230,6 +312,45 @@ function ApprovalPage() {
     { key: 'initiated', label: '我发起的' },
     { key: 'all', label: '全部审批' }
   ]
+
+  const getStepStatus = (step: ApprovalDetail['flow'][0], index: number) => {
+    const currentStage = detail?.currentStep || 1
+    if (step.status === 'approved') return 'finish'
+    if (step.status === 'rejected') return 'error'
+    if (currentStage > index + 1) return 'finish'
+    if (currentStage === index + 1) return 'process'
+    return 'wait'
+  }
+
+  const getStepIcon = (status: string) => {
+    const statusIconMap: Record<string, React.ReactNode> = {
+      approved: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+      rejected: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
+      current: <ClockCircleOutlined style={{ color: '#1677ff' }} />,
+      pending: <MinusCircleOutlined style={{ color: '#d9d9d9' }} />,
+    }
+    return statusIconMap[status]
+  }
+
+  const getTimelineColor = (status: string) => {
+    const colorMap: Record<string, string> = {
+      approved: 'green',
+      rejected: 'red',
+      current: 'blue',
+      pending: 'gray',
+    }
+    return colorMap[status] || 'gray'
+  }
+
+  const getStatusText = (status: string) => {
+    const statusTextMap: Record<string, string> = {
+      approved: '已通过',
+      rejected: '已驳回',
+      current: '审批中',
+      pending: '待处理',
+    }
+    return statusTextMap[status] || status
+  }
 
   return (
     <div style={{ padding: 16 }}>
@@ -240,7 +361,7 @@ function ApprovalPage() {
       <Card>
         <Tabs
           activeKey={activeTab}
-          onChange={setActiveTab}
+          onChange={(key) => setActiveTab(key as 'pending' | 'initiated' | 'all')}
           items={tabItems}
           style={{ marginBottom: 16 }}
         />
@@ -266,6 +387,16 @@ function ApprovalPage() {
         onCancel={() => setDetailVisible(false)}
         width={800}
         footer={[
+          detail && canApprove(detail) ? (
+            <Space key="actions">
+              <Button key="reject" danger onClick={() => openHandleModal(detail, 'reject')}>
+                驳回
+              </Button>
+              <Button key="approve" type="primary" onClick={() => openHandleModal(detail, 'approve')}>
+                通过
+              </Button>
+            </Space>
+          ) : null,
           <Button key="close" onClick={() => setDetailVisible(false)}>
             关闭
           </Button>
@@ -278,7 +409,7 @@ function ApprovalPage() {
                 <Descriptions.Item label="审批编号">{detail.code}</Descriptions.Item>
                 <Descriptions.Item label="审批标题">{detail.title}</Descriptions.Item>
                 <Descriptions.Item label="审批类型">
-                  {typeMap[detail.type] || detail.type}
+                  {typeMap[String(detail.type)] || detail.type}
                 </Descriptions.Item>
                 <Descriptions.Item label="状态">
                   <Tag color={statusMap[detail.status].color}>
@@ -287,20 +418,30 @@ function ApprovalPage() {
                 </Descriptions.Item>
                 <Descriptions.Item label="申请人">{detail.applicantName}</Descriptions.Item>
                 <Descriptions.Item label="申请部门">{detail.applicantDept}</Descriptions.Item>
-                <Descriptions.Item label="关联预警" span={2}>
-                  {detail.relatedAlert ? (
-                    <Space>
-                      <AlertOutlined style={{ color: '#faad14' }} />
-                      <Text>{detail.relatedAlert.code} - {detail.relatedAlert.content}</Text>
-                    </Space>
-                  ) : (
-                    <Text type="secondary">无关联预警</Text>
-                  )}
-                </Descriptions.Item>
                 <Descriptions.Item label="创建时间" span={2}>
                   {detail.createdAt}
                 </Descriptions.Item>
               </Descriptions>
+
+              {detail.relatedAlert && (
+                <Card size="small" style={{ marginTop: 16, background: '#fff7e6' }}>
+                  <Title level={5}>
+                    <WarningOutlined style={{ color: '#fa8c16' }} /> 关联预警
+                  </Title>
+                  <Descriptions bordered size="small" column={2}>
+                    <Descriptions.Item label="预警编号">{detail.relatedAlert.code}</Descriptions.Item>
+                    <Descriptions.Item label="预警级别">
+                      <Tag color="red">{detail.relatedAlert.level}</Tag>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="预警内容" span={2}>
+                      {detail.relatedAlert.content}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="预警状态" span={2}>
+                      {detail.relatedAlert.status}
+                    </Descriptions.Item>
+                  </Descriptions>
+                </Card>
+              )}
 
               <Divider orientation="left">审批内容</Divider>
               <Paragraph style={{ whiteSpace: 'pre-wrap' }}>{detail.content}</Paragraph>
@@ -316,7 +457,7 @@ function ApprovalPage() {
                   <List
                     size="small"
                     dataSource={detail.attachments}
-                    renderItem={(item) => (
+                    renderItem={(item: any) => (
                       <List.Item>
                         <List.Item.Meta
                           title={<a href={item.url}>{item.name}</a>}
@@ -334,17 +475,10 @@ function ApprovalPage() {
                 size="small"
                 current={detail.flow.findIndex((f) => f.status === 'current') + 1}
                 items={detail.flow.map((step, index) => {
-                  const stageNames = ['治理单位确认', '区级主管部门复核', '市级政府批准']
-                  const stepStatus = step.status === 'approved' ? 'finish' : step.status === 'rejected' ? 'error' : step.status === 'current' ? 'process' : 'wait'
-                  const statusIconMap: Record<string, React.ReactNode> = {
-                    approved: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
-                    rejected: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
-                    current: <ClockCircleOutlined style={{ color: '#1677ff' }} />,
-                    pending: <MinusCircleOutlined style={{ color: '#d9d9d9' }} />,
-                  }
+                  const stepStatus = getStepStatus(step, index)
                   return {
-                    title: stageNames[index] || step.name,
-                    icon: statusIconMap[step.status],
+                    title: stepNames[index] || step.name,
+                    icon: getStepIcon(step.status),
                     description: (
                       <div>
                         {step.approver && (
@@ -368,20 +502,8 @@ function ApprovalPage() {
                   <Divider orientation="left">审批历史</Divider>
                   <Timeline
                     items={detail.flow.map((step) => {
-                      const colorMap: Record<string, string> = {
-                        approved: 'green',
-                        rejected: 'red',
-                        current: 'blue',
-                        pending: 'gray',
-                      }
-                      const statusTextMap: Record<string, string> = {
-                        approved: '已通过',
-                        rejected: '已驳回',
-                        current: '审批中',
-                        pending: '待处理',
-                      }
                       return {
-                        color: colorMap[step.status] || 'gray',
+                        color: getTimelineColor(step.status),
                         children: (
                           <div>
                             <div>
@@ -390,7 +512,7 @@ function ApprovalPage() {
                                 color={step.status === 'approved' ? 'success' : step.status === 'rejected' ? 'error' : step.status === 'current' ? 'processing' : 'default'}
                                 style={{ marginLeft: 8 }}
                               >
-                                {statusTextMap[step.status] || step.status}
+                                {getStatusText(step.status)}
                               </Tag>
                             </div>
                             {step.approver && (

@@ -36,6 +36,26 @@ export interface IApprovalQuery {
   projectId?: number;
   startDate?: string;
   endDate?: string;
+  tab?: 'pending' | 'initiated' | 'all';
+}
+
+export interface IApprovalDetailWithRelated extends IApprovalWorkflowAttributes {
+  history: any[];
+  relatedAlert?: {
+    alertId: number;
+    code: string;
+    content: string;
+    level: string;
+    status: string;
+  };
+  flow: Array<{
+    step: number;
+    name: string;
+    status: 'pending' | 'approved' | 'rejected' | 'current';
+    approver?: string;
+    opinion?: string;
+    time?: string;
+  }>;
 }
 
 export interface ICreateApprovalRequest {
@@ -198,7 +218,7 @@ export const approveStage1 = async (
     } else {
       updateData.currentStage = WorkflowStage.REJECTED;
       updateData.workflowStatus = WorkflowStatus.REJECTED;
-      updateData.finalResult = '一级审批驳回';
+      updateData.finalResult = `一级审批驳回：${request.opinion}`;
       updateData.finalTime = new Date();
     }
 
@@ -216,6 +236,16 @@ export const approveStage1 = async (
       request.attachments,
       transaction
     );
+
+    if (request.result === ApprovalResult.REJECTED && workflow.relatedAlertId) {
+      await Alert.update(
+        {
+          alertStatus: AlertStatus.PROCESSING,
+          handleResult: `审批驳回：${request.opinion}`,
+        },
+        { where: { alertId: workflow.relatedAlertId }, transaction }
+      );
+    }
 
     await transaction.commit();
 
@@ -275,7 +305,7 @@ export const approveStage2 = async (
     } else {
       updateData.currentStage = WorkflowStage.REJECTED;
       updateData.workflowStatus = WorkflowStatus.REJECTED;
-      updateData.finalResult = '二级审批驳回';
+      updateData.finalResult = `二级审批驳回：${request.opinion}`;
       updateData.finalTime = new Date();
     }
 
@@ -293,6 +323,16 @@ export const approveStage2 = async (
       request.attachments,
       transaction
     );
+
+    if (request.result === ApprovalResult.REJECTED && workflow.relatedAlertId) {
+      await Alert.update(
+        {
+          alertStatus: AlertStatus.PROCESSING,
+          handleResult: `审批驳回：${request.opinion}`,
+        },
+        { where: { alertId: workflow.relatedAlertId }, transaction }
+      );
+    }
 
     await transaction.commit();
 
@@ -341,6 +381,10 @@ export const approveStage3 = async (
   const transaction = await sequelize.transaction();
 
   try {
+    const finalResult = request.result === ApprovalResult.APPROVED 
+      ? `审批通过：${request.opinion || '同意'}` 
+      : `三级审批驳回：${request.opinion}`;
+
     const updateData: any = {
       stage3Opinion: request.opinion,
       stage3Result: request.result,
@@ -350,12 +394,12 @@ export const approveStage3 = async (
     if (request.result === ApprovalResult.APPROVED) {
       updateData.currentStage = WorkflowStage.COMPLETED;
       updateData.workflowStatus = WorkflowStatus.APPROVED;
-      updateData.finalResult = '审批通过';
+      updateData.finalResult = finalResult;
       updateData.finalTime = new Date();
     } else {
       updateData.currentStage = WorkflowStage.REJECTED;
       updateData.workflowStatus = WorkflowStatus.REJECTED;
-      updateData.finalResult = '三级审批驳回';
+      updateData.finalResult = finalResult;
       updateData.finalTime = new Date();
     }
 
@@ -380,7 +424,7 @@ export const approveStage3 = async (
           alertStatus: AlertStatus.RESOLVED,
           relatedApprovalId: request.workflowId,
           handleMeasure: '已通过三级审批流程',
-          handleResult: `审批编号${workflow.workflowCode}已通过：${updateData.finalResult}`,
+          handleResult: finalResult,
           handleTime: new Date(),
           isApprovalNeeded: false,
         },
@@ -388,14 +432,44 @@ export const approveStage3 = async (
       );
     }
 
-    if (workflow.projectId && request.result === ApprovalResult.APPROVED) {
-      await GovernanceProject.update(
-        { projectStatus: ProjectStatus.UNDER_CONSTRUCTION },
-        { where: { projectId: workflow.projectId, projectStatus: ProjectStatus.DELAYED }, transaction }
+    if (request.result === ApprovalResult.REJECTED && workflow.relatedAlertId) {
+      await Alert.update(
+        {
+          alertStatus: AlertStatus.PROCESSING,
+          handleResult: finalResult,
+        },
+        { where: { alertId: workflow.relatedAlertId }, transaction }
       );
     }
 
+    if (workflow.projectId && request.result === ApprovalResult.APPROVED) {
+      const project = await GovernanceProject.findByPk(workflow.projectId);
+      if (project && project.projectStatus === ProjectStatus.DELAYED) {
+        await GovernanceProject.update(
+          { projectStatus: ProjectStatus.UNDER_CONSTRUCTION },
+          { where: { projectId: workflow.projectId }, transaction }
+        );
+        await addApprovalHistory(
+          request.workflowId,
+          3,
+          currentUser.userId,
+          OperationType.APPROVE,
+          `方案调整日志：项目状态从"延期"更新为"在建"`,
+          undefined,
+          transaction
+        );
+      }
+    }
+
     await transaction.commit();
+
+    if (request.result === ApprovalResult.APPROVED) {
+      try {
+        await pushApprovalMessage(workflow, 4);
+      } catch (err) {
+        console.error('Failed to push approval complete message:', err);
+      }
+    }
 
     await clearApprovalCache();
 
@@ -463,7 +537,7 @@ export const cancelApproval = async (
 export const getApprovalList = async (
   query: IApprovalQuery,
   currentUser?: { userId: number; role?: string; userLevel?: number }
-): Promise<{ rows: IApprovalWorkflowAttributes[]; count: number }> => {
+): Promise<{ rows: any[]; count: number }> => {
   const {
     page = 1,
     pageSize = 10,
@@ -476,6 +550,7 @@ export const getApprovalList = async (
     projectId,
     startDate,
     endDate,
+    tab,
   } = query;
 
   const where: any = {};
@@ -491,17 +566,27 @@ export const getApprovalList = async (
     where.createdAt = { [Op.between]: [new Date(startDate), new Date(endDate)] };
   }
 
-  if (currentUser) {
-    const pendingWhere: any[] = [];
-    if (currentStage === WorkflowStage.STAGE_1_PENDING) {
-      pendingWhere.push({ stage1Handler: currentUser.userId });
-    } else if (currentStage === WorkflowStage.STAGE_2_PENDING) {
-      pendingWhere.push({ stage2Handler: currentUser.userId });
-    } else if (currentStage === WorkflowStage.STAGE_3_PENDING) {
-      pendingWhere.push({ stage3Handler: currentUser.userId });
-    }
-    if (pendingWhere.length > 0) {
+  if (currentUser && tab) {
+    if (tab === 'pending') {
+      const pendingWhere: any[] = [];
+      pendingWhere.push({
+        currentStage: WorkflowStage.STAGE_1_PENDING,
+        stage1Handler: currentUser.userId,
+        workflowStatus: WorkflowStatus.IN_PROGRESS,
+      });
+      pendingWhere.push({
+        currentStage: WorkflowStage.STAGE_2_PENDING,
+        stage2Handler: currentUser.userId,
+        workflowStatus: WorkflowStatus.IN_PROGRESS,
+      });
+      pendingWhere.push({
+        currentStage: WorkflowStage.STAGE_3_PENDING,
+        stage3Handler: currentUser.userId,
+        workflowStatus: WorkflowStatus.IN_PROGRESS,
+      });
       where[Op.or] = pendingWhere;
+    } else if (tab === 'initiated') {
+      where.applicantId = currentUser.userId;
     }
   }
 
@@ -513,7 +598,14 @@ export const getApprovalList = async (
     include: [
       { model: User, as: 'applicant', attributes: ['userId', 'username', 'realName'] },
       { model: Region, as: 'region', attributes: ['regionId', 'regionName'] },
-      { model: Alert, as: 'alert', attributes: ['alertId', 'alertCode', 'alertContent'] },
+      { 
+        model: Alert, 
+        as: 'alert', 
+        attributes: ['alertId', 'alertCode', 'alertContent', 'alertLevel', 'alertStatus'] 
+      },
+      { model: User, as: 'stage1HandlerUser', attributes: ['userId', 'username', 'realName'] },
+      { model: User, as: 'stage2HandlerUser', attributes: ['userId', 'username', 'realName'] },
+      { model: User, as: 'stage3HandlerUser', attributes: ['userId', 'username', 'realName'] },
     ],
   };
 
@@ -529,18 +621,84 @@ export const getApprovalList = async (
 
   const { rows, count } = await ApprovalWorkflow.findAndCountAll(options);
 
+  const transformedRows = rows.map((row) => {
+    const json = row.toJSON() as any;
+    
+    let currentStep = 1;
+    let totalSteps = 3;
+    if (json.currentStage === WorkflowStage.STAGE_1_PENDING) currentStep = 1;
+    else if (json.currentStage === WorkflowStage.STAGE_2_PENDING) currentStep = 2;
+    else if (json.currentStage === WorkflowStage.STAGE_3_PENDING) currentStep = 3;
+    else if (json.currentStage === WorkflowStage.COMPLETED) currentStep = 4;
+    else if (json.currentStage === WorkflowStage.REJECTED) currentStep = json.stage1Result === ApprovalResult.REJECTED ? 1 : 
+                                                                 json.stage2Result === ApprovalResult.REJECTED ? 2 : 3;
+
+    let currentApprover: string | undefined;
+    if (json.currentStage === WorkflowStage.STAGE_1_PENDING && json.stage1HandlerUser) {
+      currentApprover = json.stage1HandlerUser.realName || json.stage1HandlerUser.username;
+    } else if (json.currentStage === WorkflowStage.STAGE_2_PENDING && json.stage2HandlerUser) {
+      currentApprover = json.stage2HandlerUser.realName || json.stage2HandlerUser.username;
+    } else if (json.currentStage === WorkflowStage.STAGE_3_PENDING && json.stage3HandlerUser) {
+      currentApprover = json.stage3HandlerUser.realName || json.stage3HandlerUser.username;
+    }
+
+    let relatedAlert: any = undefined;
+    if (json.alert) {
+      const alertLevelMap: Record<number, string> = {
+        1: '一级预警',
+        2: '二级预警',
+        3: '三级预警',
+      };
+      relatedAlert = {
+        alertId: json.alert.alertId,
+        code: json.alert.alertCode,
+        content: json.alert.alertContent,
+        level: alertLevelMap[json.alert.alertLevel] || '未知',
+        status: json.alert.alertStatus,
+      };
+    }
+
+    let status = 'processing';
+    if (json.workflowStatus === WorkflowStatus.APPROVED) status = 'approved';
+    else if (json.workflowStatus === WorkflowStatus.REJECTED) status = 'rejected';
+    else if (json.workflowStatus === WorkflowStatus.CANCELLED) status = 'rejected';
+    else if (json.workflowStatus === WorkflowStatus.IN_PROGRESS) {
+      status = currentStep > 1 ? 'processing' : 'pending';
+    }
+
+    return {
+      ...json,
+      id: json.workflowId,
+      code: json.workflowCode,
+      title: json.applicationContent.substring(0, 50),
+      type: json.workflowType,
+      applicantId: json.applicantId,
+      applicantName: json.applicant?.realName || json.applicant?.username,
+      applicantDept: json.applicantUnit,
+      status,
+      currentStep: Math.min(currentStep, 3),
+      totalSteps,
+      currentApprover,
+      relatedAlert,
+      createdAt: json.createdAt,
+      updatedAt: json.updatedAt,
+    };
+  });
+
+  const result = { rows: transformedRows, count };
+
   try {
-    await redis.setex(cacheKey, CACHE_TTL, JSON.stringify({ rows, count }));
+    await redis.setex(cacheKey, CACHE_TTL, JSON.stringify(result));
   } catch (err) {
     console.error('Cache write error:', err);
   }
 
-  return { rows: rows.map((r) => r.toJSON()), count };
+  return result;
 };
 
 export const getApprovalById = async (
   workflowId: number
-): Promise<(IApprovalWorkflowAttributes & { history: any[] }) | null> => {
+): Promise<IApprovalDetailWithRelated | null> => {
   const workflow = await ApprovalWorkflow.findByPk(workflowId, {
     include: [
       { model: User, as: 'applicant', attributes: ['userId', 'username', 'realName'] },
@@ -548,7 +706,11 @@ export const getApprovalById = async (
       { model: User, as: 'stage2HandlerUser', attributes: ['userId', 'username', 'realName'] },
       { model: User, as: 'stage3HandlerUser', attributes: ['userId', 'username', 'realName'] },
       { model: Region, as: 'region', attributes: ['regionId', 'regionName'] },
-      { model: Alert, as: 'alert', attributes: ['alertId', 'alertCode', 'alertContent'] },
+      { 
+        model: Alert, 
+        as: 'alert', 
+        attributes: ['alertId', 'alertCode', 'alertContent', 'alertLevel', 'alertStatus'] 
+      },
     ],
   });
 
@@ -564,10 +726,128 @@ export const getApprovalById = async (
     ],
   });
 
-  return {
-    ...workflow.toJSON(),
-    history: history.map((h) => h.toJSON()),
+  const json = workflow.toJSON() as any;
+
+  const alertLevelMap: Record<number, string> = {
+    1: '一级预警',
+    2: '二级预警',
+    3: '三级预警',
   };
+
+  const alertStatusMap: Record<number, string> = {
+    1: '待处理',
+    2: '处理中',
+    3: '已处理',
+    4: '已解决',
+    5: '已忽略',
+  };
+
+  let relatedAlert: IApprovalDetailWithRelated['relatedAlert'] | undefined;
+  if (json.alert) {
+    relatedAlert = {
+      alertId: json.alert.alertId,
+      code: json.alert.alertCode,
+      content: json.alert.alertContent,
+      level: alertLevelMap[json.alert.alertLevel] || '未知',
+      status: alertStatusMap[json.alert.alertStatus] || '未知',
+    };
+  }
+
+  const stepNames = ['治理单位确认', '区级主管部门复核', '市级政府批准'];
+  const flow: IApprovalDetailWithRelated['flow'] = stepNames.map((name, index) => {
+    const step = index + 1;
+    let status: 'pending' | 'approved' | 'rejected' | 'current' = 'pending';
+    let approver: string | undefined;
+    let opinion: string | undefined;
+    let time: string | undefined;
+
+    const stageResult = step === 1 ? json.stage1Result : step === 2 ? json.stage2Result : json.stage3Result;
+    const stageOpinion = step === 1 ? json.stage1Opinion : step === 2 ? json.stage2Opinion : json.stage3Opinion;
+    const stageTime = step === 1 ? json.stage1Time : step === 2 ? json.stage2Time : json.stage3Time;
+    const stageHandlerUser = step === 1 ? json.stage1HandlerUser : step === 2 ? json.stage2HandlerUser : json.stage3HandlerUser;
+
+    if (stageResult === ApprovalResult.APPROVED) {
+      status = 'approved';
+    } else if (stageResult === ApprovalResult.REJECTED) {
+      status = 'rejected';
+    } else if (json.currentStage === step) {
+      status = 'current';
+    }
+
+    if (stageHandlerUser) {
+      approver = stageHandlerUser.realName || stageHandlerUser.username;
+    }
+    opinion = stageOpinion;
+    time = stageTime ? new Date(stageTime).toLocaleString('zh-CN') : undefined;
+
+    return {
+      step,
+      name,
+      status,
+      approver,
+      opinion,
+      time,
+    };
+  });
+
+  let currentStep = 1;
+  let totalSteps = 3;
+  if (json.currentStage === WorkflowStage.STAGE_1_PENDING) currentStep = 1;
+  else if (json.currentStage === WorkflowStage.STAGE_2_PENDING) currentStep = 2;
+  else if (json.currentStage === WorkflowStage.STAGE_3_PENDING) currentStep = 3;
+  else if (json.currentStage === WorkflowStage.COMPLETED) currentStep = 4;
+  else if (json.currentStage === WorkflowStage.REJECTED) currentStep = json.stage1Result === ApprovalResult.REJECTED ? 1 : 
+                                                               json.stage2Result === ApprovalResult.REJECTED ? 2 : 3;
+
+  let currentApprover: string | undefined;
+  if (json.currentStage === WorkflowStage.STAGE_1_PENDING && json.stage1HandlerUser) {
+    currentApprover = json.stage1HandlerUser.realName || json.stage1HandlerUser.username;
+  } else if (json.currentStage === WorkflowStage.STAGE_2_PENDING && json.stage2HandlerUser) {
+    currentApprover = json.stage2HandlerUser.realName || json.stage2HandlerUser.username;
+  } else if (json.currentStage === WorkflowStage.STAGE_3_PENDING && json.stage3HandlerUser) {
+    currentApprover = json.stage3HandlerUser.realName || json.stage3HandlerUser.username;
+  }
+
+  let status = 'processing';
+  if (json.workflowStatus === WorkflowStatus.APPROVED) status = 'approved';
+  else if (json.workflowStatus === WorkflowStatus.REJECTED) status = 'rejected';
+  else if (json.workflowStatus === WorkflowStatus.CANCELLED) status = 'rejected';
+  else if (json.workflowStatus === WorkflowStatus.IN_PROGRESS) {
+    status = currentStep > 1 ? 'processing' : 'pending';
+  }
+
+  const typeMap: Record<number, string> = {
+    1: 'governance_plan_adjustment',
+    2: 'emergency_sewage_interception',
+    3: 'project_delay',
+    4: 'fund_adjustment',
+  };
+
+  return {
+    ...json,
+    id: json.workflowId,
+    code: json.workflowCode,
+    title: json.applicationContent.substring(0, 50),
+    type: typeMap[json.workflowType] || 'other',
+    content: json.applicationContent,
+    reason: json.applicationReason,
+    proposedScheme: json.proposedScheme,
+    expectedEffect: json.expectedEffect,
+    applicantId: json.applicantId,
+    applicantName: json.applicant?.realName || json.applicant?.username,
+    applicantDept: json.applicantUnit,
+    status,
+    currentStep: Math.min(currentStep, 3),
+    totalSteps,
+    currentApprover,
+    relatedAlert,
+    flow,
+    formData: {},
+    attachments: json.attachments ? (Array.isArray(json.attachments) ? json.attachments : []) : [],
+    history: history.map((h) => h.toJSON()),
+    createdAt: json.createdAt ? new Date(json.createdAt).toLocaleString('zh-CN') : undefined,
+    updatedAt: json.updatedAt ? new Date(json.updatedAt).toLocaleString('zh-CN') : undefined,
+  } as IApprovalDetailWithRelated;
 };
 
 export const getApprovalHistory = async (workflowId: number): Promise<any[]> => {

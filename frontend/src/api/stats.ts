@@ -1,5 +1,5 @@
 import { request } from '@/utils/request'
-import type { RegionStats, WaterBodyStats, RealtimeStats, TrendData, StatsFilterParams } from '@/types'
+import type { RegionStats, WaterBodyStats, RealtimeStats, TrendData, StatsFilterParams, DashboardStats } from '@/types'
 
 export function getRegionStats(params?: StatsFilterParams): Promise<RegionStats[]> {
   return request<RegionStats[]>({
@@ -28,6 +28,14 @@ export function getRealtimeStats(waterBodyId?: number): Promise<RealtimeStats> {
 export function getTrendData(params?: StatsFilterParams & { days?: number }): Promise<TrendData> {
   return request<TrendData>({
     url: '/api/stats/trend',
+    method: 'get',
+    params
+  })
+}
+
+export function getDashboardStats(params?: StatsFilterParams & { days?: number }): Promise<DashboardStats> {
+  return request<DashboardStats>({
+    url: '/api/stats/dashboard',
     method: 'get',
     params
   })

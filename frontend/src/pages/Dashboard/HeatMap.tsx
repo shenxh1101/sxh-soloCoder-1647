@@ -1,12 +1,16 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useMemo, useState } from 'react'
 import { Card, Button, Empty, Spin } from 'antd'
 import ReactECharts from 'echarts-for-react'
-import { getRegionStats } from '@/api/stats'
-import type { RegionStats, StatsFilterParams } from '@/types'
+import type { DashboardStats, StatsFilterParams } from '@/types'
 
 interface HeatMapProps {
+  data?: DashboardStats['regionList']
+  loading?: boolean
   filterParams?: StatsFilterParams
+  onDrillDown?: (province: string | null) => void
 }
+
+type RegionItem = DashboardStats['regionList'][number]
 
 function getRateColor(rate: number): string {
   const ratio = Math.max(0, Math.min(1, rate / 100))
@@ -16,66 +20,53 @@ function getRateColor(rate: number): string {
   return `rgb(${r}, ${g}, ${b})`
 }
 
-function HeatMap({ filterParams }: HeatMapProps) {
-  const [loading, setLoading] = useState(false)
-  const [data, setData] = useState<RegionStats[]>([])
+function HeatMap({ data = [], loading, filterParams, onDrillDown }: HeatMapProps) {
   const [drillDown, setDrillDown] = useState<string | null>(null)
 
-  const fetchData = useCallback(async () => {
-    setLoading(true)
-    try {
-      const params: StatsFilterParams = {
-        ...filterParams,
-        ...(drillDown ? { province: drillDown } : {})
-      }
-      const result = await getRegionStats(params)
-      setData(result || [])
-    } finally {
-      setLoading(false)
+  const displayData = useMemo(() => {
+    if (!filterParams?.province && !drillDown) {
+      return data.filter(item => item.level === 'province')
     }
-  }, [filterParams, drillDown])
-
-  useEffect(() => {
-    fetchData()
-  }, [fetchData])
+    const provinceName = drillDown || filterParams?.province
+    if (provinceName) {
+      return data.filter(item => item.level === 'city' && item.provinceName === provinceName)
+    }
+    return data.filter(item => item.level === 'province')
+  }, [data, drillDown, filterParams])
 
   const sortedData = useMemo(
-    () => [...data].sort((a, b) => a.qualifiedRate - b.qualifiedRate),
-    [data]
+    () => [...displayData].sort((a, b) => a.waterQualityComplianceRate - b.waterQualityComplianceRate),
+    [displayData]
   )
 
-  const getRegionName = useCallback(
-    (item: RegionStats) => (drillDown ? (item as any).city || item.province : item.province),
-    [drillDown]
-  )
+  const getRegionName = useMemo(() => {
+    return (item: RegionItem) => item.regionName
+  }, [])
 
-  const buildTooltipHtml = useCallback(
-    (raw: RegionStats) => {
-      const name = getRegionName(raw)
-      return [
-        `<div style="font-weight:bold;margin-bottom:6px;font-size:13px">${name}</div>`,
-        `<div style="display:flex;justify-content:space-between;gap:24px">`,
-        `<span>水质达标率</span><span style="font-weight:600">${raw.qualifiedRate.toFixed(1)}%</span>`,
-        `</div>`,
-        `<div style="display:flex;justify-content:space-between;gap:24px">`,
-        `<span>治理完成率</span><span style="font-weight:600">${raw.completionRate.toFixed(1)}%</span>`,
-        `</div>`,
-        `<div style="display:flex;justify-content:space-between;gap:24px">`,
-        `<span>公众满意度</span><span style="font-weight:600">${raw.satisfaction.toFixed(1)}%</span>`,
-        `</div>`,
-        `<div style="display:flex;justify-content:space-between;gap:24px">`,
-        `<span>水体总数</span><span style="font-weight:600">${raw.waterBodyCount}</span>`,
-        `</div>`,
-        `<div style="display:flex;justify-content:space-between;gap:24px">`,
-        `<span>达标水体</span><span style="font-weight:600">${raw.qualifiedCount}</span>`,
-        `</div>`,
-        `<div style="display:flex;justify-content:space-between;gap:24px">`,
-        `<span>治理项目数</span><span style="font-weight:600">${raw.treatmentCount}</span>`,
-        `</div>`
-      ].join('')
-    },
-    [getRegionName]
-  )
+  const buildTooltipHtml = (raw: RegionItem) => {
+    const name = getRegionName(raw)
+    return [
+      `<div style="font-weight:bold;margin-bottom:6px;font-size:13px">${name}</div>`,
+      `<div style="display:flex;justify-content:space-between;gap:24px">`,
+      `<span>水质达标率</span><span style="font-weight:600">${raw.waterQualityComplianceRate.toFixed(1)}%</span>`,
+      `</div>`,
+      `<div style="display:flex;justify-content:space-between;gap:24px">`,
+      `<span>治理完成率</span><span style="font-weight:600">${raw.governanceCompletionRate.toFixed(1)}%</span>`,
+      `</div>`,
+      `<div style="display:flex;justify-content:space-between;gap:24px">`,
+      `<span>公众满意度</span><span style="font-weight:600">${raw.publicSatisfaction.toFixed(1)}%</span>`,
+      `</div>`,
+      `<div style="display:flex;justify-content:space-between;gap:24px">`,
+      `<span>水体总数</span><span style="font-weight:600">${raw.waterBodyCount}</span>`,
+      `</div>`,
+      `<div style="display:flex;justify-content:space-between;gap:24px">`,
+      `<span>达标水体</span><span style="font-weight:600">${raw.qualifiedWaterBodyCount}</span>`,
+      `</div>`,
+      `<div style="display:flex;justify-content:space-between;gap:24px">`,
+      `<span>治理项目数</span><span style="font-weight:600">${raw.projectCount}</span>`,
+      `</div>`
+    ].join('')
+  }
 
   const chartOption = useMemo(() => {
     if (sortedData.length === 0) return null
@@ -83,16 +74,16 @@ function HeatMap({ filterParams }: HeatMapProps) {
     const names = sortedData.map(getRegionName)
 
     const barData = sortedData.map((d) => ({
-      value: d.qualifiedRate,
-      itemStyle: { color: getRateColor(d.qualifiedRate) },
+      value: d.waterQualityComplianceRate,
+      itemStyle: { color: getRateColor(d.waterQualityComplianceRate) },
       rawData: d
     }))
 
     const scatterData = sortedData.map((d) => ({
-      value: [d.completionRate, d.satisfaction],
+      value: [d.governanceCompletionRate, d.publicSatisfaction],
       name: getRegionName(d),
       rawData: d,
-      itemStyle: { color: getRateColor(d.qualifiedRate) }
+      itemStyle: { color: getRateColor(d.waterQualityComplianceRate) }
     }))
 
     return {
@@ -174,7 +165,7 @@ function HeatMap({ filterParams }: HeatMapProps) {
               shadowColor: 'rgba(0,0,0,0.25)'
             }
           },
-          ...(drillDown
+          ...(drillDown || filterParams?.province
             ? {}
             : {
                 cursor: 'pointer'
@@ -203,29 +194,32 @@ function HeatMap({ filterParams }: HeatMapProps) {
         }
       ]
     }
-  }, [sortedData, drillDown, getRegionName, buildTooltipHtml])
+  }, [sortedData, drillDown, getRegionName, filterParams?.province])
 
   const handleChartClick = (params: any) => {
-    if (drillDown) return
+    if (drillDown || filterParams?.province) return
     if (params.componentType === 'series' && params.seriesType === 'bar') {
       const provinceName = params.name
       if (provinceName) {
         setDrillDown(provinceName)
+        onDrillDown?.(provinceName)
       }
     }
   }
 
   const handleBack = () => {
     setDrillDown(null)
+    onDrillDown?.(null)
   }
 
   const chartHeight = Math.max(300, sortedData.length * 36 + 60)
+  const currentProvince = drillDown || filterParams?.province
 
   return (
     <Card
-      title={drillDown ? `${drillDown} — 城市治理数据` : '全国水体治理达标率'}
+      title={currentProvince ? `${currentProvince} — 城市治理数据` : '全国水体治理达标率'}
       extra={
-        drillDown ? (
+        currentProvince ? (
           <Button type="link" onClick={handleBack}>
             ← 返回全国
           </Button>

@@ -78,6 +78,7 @@ router.get('/', authenticate, async (req: Request, res: Response): Promise<void>
       projectId: req.query.projectId ? parseInt(req.query.projectId as string) : undefined,
       startDate: req.query.startDate as string,
       endDate: req.query.endDate as string,
+      tab: req.query.tab as 'pending' | 'initiated' | 'all' | undefined,
     };
 
     const { rows, count } = await getApprovalList(query, currentUser);

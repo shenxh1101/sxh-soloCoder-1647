@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react'
 import { Row, Col, Card, Statistic, Spin } from 'antd'
 import {
   RiseOutlined,
@@ -8,11 +7,11 @@ import {
   SmileOutlined,
   WarningOutlined
 } from '@ant-design/icons'
-import { getWaterBodyStats, getTrendData } from '@/api/stats'
-import type { StatsFilterParams } from '@/types'
+import type { DashboardStats } from '@/types'
 
 interface OverviewCardsProps {
-  filterParams?: StatsFilterParams
+  data?: DashboardStats['overview']
+  loading?: boolean
 }
 
 interface CardData {
@@ -25,73 +24,45 @@ interface CardData {
   monthOnMonth: number
 }
 
-function OverviewCards({ filterParams }: OverviewCardsProps) {
-  const [loading, setLoading] = useState(false)
-  const [cards, setCards] = useState<CardData[]>([])
-
-  useEffect(() => {
-    fetchData()
-  }, [filterParams])
-
-  const fetchData = async () => {
-    setLoading(true)
-    try {
-      const [waterStats, trendData] = await Promise.all([
-        getWaterBodyStats(filterParams),
-        getTrendData(filterParams)
-      ])
-
-      const cardData: CardData[] = [
-        {
-          title: '水质达标率',
-          value: waterStats.qualifiedRate,
-          suffix: '%',
-          icon: <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 32 }} />,
-          color: '#52c41a',
-          yearOnYear: trendData.comparison.yearOnYear,
-          monthOnMonth: trendData.comparison.monthOnMonth
-        },
-        {
-          title: '治理完成率',
-          value: 0,
-          suffix: '%',
-          icon: <DashboardOutlined style={{ color: '#1890ff', fontSize: 32 }} />,
-          color: '#1890ff',
-          yearOnYear: 3.2,
-          monthOnMonth: 1.5
-        },
-        {
-          title: '公众满意度',
-          value: 0,
-          suffix: '%',
-          icon: <SmileOutlined style={{ color: '#722ed1', fontSize: 32 }} />,
-          color: '#722ed1',
-          yearOnYear: 2.8,
-          monthOnMonth: 0.9
-        },
-        {
-          title: '排污口异常指数',
-          value: 0,
-          suffix: '',
-          icon: <WarningOutlined style={{ color: '#fa8c16', fontSize: 32 }} />,
-          color: '#fa8c16',
-          yearOnYear: -5.3,
-          monthOnMonth: -2.1
-        }
-      ]
-
-      if (trendData.days.length > 0) {
-        const latest = trendData.days[trendData.days.length - 1]
-        cardData[1].value = latest.completionRate
-        cardData[2].value = latest.satisfaction
-        cardData[3].value = latest.abnormalIndex
-      }
-
-      setCards(cardData)
-    } finally {
-      setLoading(false)
+function OverviewCards({ data, loading }: OverviewCardsProps) {
+  const cards: CardData[] = data ? [
+    {
+      title: '水质达标率',
+      value: data.waterQualityComplianceRate,
+      suffix: '%',
+      icon: <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 32 }} />,
+      color: '#52c41a',
+      yearOnYear: data.yearOnYear.waterQualityComplianceRate,
+      monthOnMonth: data.monthOnMonth.waterQualityComplianceRate
+    },
+    {
+      title: '治理完成率',
+      value: data.governanceCompletionRate,
+      suffix: '%',
+      icon: <DashboardOutlined style={{ color: '#1890ff', fontSize: 32 }} />,
+      color: '#1890ff',
+      yearOnYear: data.yearOnYear.governanceCompletionRate,
+      monthOnMonth: data.monthOnMonth.governanceCompletionRate
+    },
+    {
+      title: '公众满意度',
+      value: data.publicSatisfaction,
+      suffix: '%',
+      icon: <SmileOutlined style={{ color: '#722ed1', fontSize: 32 }} />,
+      color: '#722ed1',
+      yearOnYear: data.yearOnYear.publicSatisfaction,
+      monthOnMonth: data.monthOnMonth.publicSatisfaction
+    },
+    {
+      title: '排污口异常指数',
+      value: data.outletAbnormalityIndex,
+      suffix: '',
+      icon: <WarningOutlined style={{ color: '#fa8c16', fontSize: 32 }} />,
+      color: '#fa8c16',
+      yearOnYear: data.yearOnYear.outletAbnormalityIndex,
+      monthOnMonth: data.monthOnMonth.outletAbnormalityIndex
     }
-  }
+  ] : []
 
   const renderTrend = (value: number, type: 'yearOnYear' | 'monthOnMonth') => {
     const label = type === 'yearOnYear' ? '同比' : '环比'

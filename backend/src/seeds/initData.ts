@@ -328,7 +328,7 @@ export const seedGovernanceProjects = async (waterBodies: WaterBody[], adminUser
         actualPayment: Math.floor(Math.random() * 15000000) + 1000000,
         plannedProgress,
         actualProgress,
-        progressDeviation: actualProgress - plannedProgress,
+        progressDeviation: plannedProgress - actualProgress,
         projectStatus: actualProgress >= 100 ? ProjectStatus.COMPLETED :
           actualProgress >= 50 ? ProjectStatus.UNDER_CONSTRUCTION : ProjectStatus.NOT_STARTED,
         qualityStatus: Math.random() > 0.2 ? 1 : 2,

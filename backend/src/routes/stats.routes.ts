@@ -10,6 +10,7 @@ import {
   calculateGovernanceCompletionRate,
   calculatePublicSatisfaction,
   calculateOutletAbnormalityIndex,
+  getDashboardStats,
   IStatQuery,
 } from '../services/realtimeStats.service';
 import { getFullUserById } from '../services/auth.service';
@@ -244,6 +245,25 @@ router.post('/recalculate', authenticate, async (req: Request, res: Response): P
     success(res, null, '重新计算统计数据成功');
   } catch (err) {
     const message = err instanceof Error ? err.message : '重新计算统计数据失败';
+    error(res, message, 500);
+  }
+});
+
+router.get('/dashboard', authenticate, async (req: Request, res: Response): Promise<void> => {
+  try {
+    if (!req.user) {
+      error(res, '用户未认证', 401);
+      return;
+    }
+
+    const province = req.query.province as string;
+    const waterLevel = req.query.waterLevel as string;
+    const days = req.query.days ? parseInt(req.query.days as string) : 30;
+
+    const data = await getDashboardStats(province, waterLevel, days);
+    success(res, data, '获取看板数据成功');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : '获取看板数据失败';
     error(res, message, 500);
   }
 });

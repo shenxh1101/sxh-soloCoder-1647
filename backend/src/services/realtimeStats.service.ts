@@ -7,9 +7,10 @@ import {
   Region,
   WaterBody,
   RealtimeStat,
+  Alert,
 } from '../models';
 import { IRealtimeStatAttributes, IRealtimeStatCreationAttributes } from '../models/RealtimeStat';
-import { StatType, StatPeriod, DataQuality } from '../models/enums';
+import { StatType, StatPeriod, DataQuality, WaterBodyLevel, RegionLevel, AlertStatus } from '../models/enums';
 import { redis } from '../config';
 
 export interface IStatQuery {
@@ -483,6 +484,371 @@ const clearStatsCache = async (): Promise<void> => {
   }
 };
 
+export interface IDashboardStats {
+  overview: {
+    waterQualityComplianceRate: number;
+    governanceCompletionRate: number;
+    publicSatisfaction: number;
+    outletAbnormalityIndex: number;
+    yearOnYear: {
+      waterQualityComplianceRate: number;
+      governanceCompletionRate: number;
+      publicSatisfaction: number;
+      outletAbnormalityIndex: number;
+    };
+    monthOnMonth: {
+      waterQualityComplianceRate: number;
+      governanceCompletionRate: number;
+      publicSatisfaction: number;
+      outletAbnormalityIndex: number;
+    };
+    summary: {
+      totalWaterBodies: number;
+      totalOutlets: number;
+      totalProjects: number;
+      totalComplaints: number;
+      activeAlerts: number;
+    };
+  };
+  regionList: Array<{
+    regionName: string;
+    regionCode: string;
+    waterQualityComplianceRate: number;
+    governanceCompletionRate: number;
+    publicSatisfaction: number;
+    waterBodyCount: number;
+    qualifiedWaterBodyCount: number;
+    projectCount: number;
+    level?: 'province' | 'city';
+    provinceName?: string;
+  }>;
+  trend: Array<{
+    date: string;
+    waterQualityComplianceRate: number;
+    governanceCompletionRate: number;
+    publicSatisfaction: number;
+    outletAbnormalityIndex: number;
+  }>;
+}
+
+const getWaterBodyIdsByLevel = async (waterLevel: string): Promise<number[]> => {
+  const levelMap: Record<string, number> = {
+    'black_odorous': WaterBodyLevel.BLACK_ODOROUS,
+    'mild': WaterBodyLevel.MILD_BLACK_ODOROUS,
+    'severe': WaterBodyLevel.SEVERE_BLACK_ODOROUS,
+    'eliminated': WaterBodyLevel.ELIMINATED,
+  };
+
+  const level = levelMap[waterLevel];
+  if (level === undefined) return [];
+
+  const waterBodies = await WaterBody.findAll({
+    where: { waterBodyLevel: level, isActive: true },
+    attributes: ['waterBodyId'],
+  });
+
+  return waterBodies.map((w) => w.waterBodyId);
+};
+
+const getRegionIdByName = async (province: string): Promise<number | undefined> => {
+  const region = await Region.findOne({
+    where: { regionName: province, regionLevel: RegionLevel.PROVINCIAL, isActive: true },
+    attributes: ['regionId'],
+  });
+  return region?.regionId;
+};
+
+const calculateYearOnYearData = async (
+  currentValue: number,
+  statType: StatType,
+  regionId?: number,
+  waterBodyIds?: number[]
+): Promise<number> => {
+  const lastYearDate = new Date();
+  lastYearDate.setFullYear(lastYearDate.getFullYear() - 1);
+
+  const where: any = {
+    statType,
+    statDate: lastYearDate,
+  };
+  if (regionId) where.regionId = regionId;
+
+  const lastYearStat = await RealtimeStat.findOne({ where });
+
+  if (!lastYearStat) return 0;
+
+  const lastYearValue = lastYearStat.waterQualityComplianceRate || 0;
+  return lastYearValue > 0 ? Math.round(((currentValue - lastYearValue) / lastYearValue) * 10000) / 100 : 0;
+};
+
+const calculateMonthOnMonthData = async (
+  currentValue: number,
+  statType: StatType,
+  regionId?: number,
+  waterBodyIds?: number[]
+): Promise<number> => {
+  const lastMonthDate = new Date();
+  lastMonthDate.setMonth(lastMonthDate.getMonth() - 1);
+
+  const where: any = {
+    statType,
+    statDate: lastMonthDate,
+  };
+  if (regionId) where.regionId = regionId;
+
+  const lastMonthStat = await RealtimeStat.findOne({ where });
+
+  if (!lastMonthStat) return 0;
+
+  const lastMonthValue = lastMonthStat.waterQualityComplianceRate || 0;
+  return lastMonthValue > 0 ? Math.round(((currentValue - lastMonthValue) / lastMonthValue) * 10000) / 100 : 0;
+};
+
+const getRegionList = async (
+  regionId?: number,
+  waterBodyIds?: number[]
+): Promise<IDashboardStats['regionList']> => {
+  const regions = await Region.findAll({
+    where: {
+      regionLevel: regionId ? RegionLevel.MUNICIPAL : RegionLevel.PROVINCIAL,
+      ...(regionId && { parentId: regionId }),
+      isActive: true,
+    },
+    attributes: ['regionId', 'regionName', 'regionCode', 'parentId'],
+    include: regionId ? [{ model: Region, as: 'parent', attributes: ['regionName'] }] : undefined,
+  });
+
+  const result = await Promise.all(
+    regions.map(async (region) => {
+      const regionWaterBodyIds = waterBodyIds && waterBodyIds.length > 0
+        ? waterBodyIds
+        : undefined;
+
+      const waterBodyWhere: any = {
+        regionId: region.regionId,
+        ...(regionWaterBodyIds && { waterBodyId: { [Op.in]: regionWaterBodyIds } }),
+        isActive: true,
+      };
+
+      const [waterQualityResult, governanceResult, satisfactionResult, waterBodyCount, qualifiedWaterBodyCount, projects] = await Promise.all([
+        calculateWaterQualityComplianceRate(region.regionId, regionWaterBodyIds?.[0], undefined, 30),
+        calculateGovernanceCompletionRate(region.regionId, regionWaterBodyIds?.[0]),
+        calculatePublicSatisfaction(region.regionId, regionWaterBodyIds?.[0], 30),
+        WaterBody.count({ where: waterBodyWhere }),
+        WaterBody.count({
+          where: waterBodyWhere,
+          include: [{
+            model: SewageOutlet,
+            as: 'sewageOutlets',
+            required: true,
+            include: [{
+              model: WaterQualityData,
+              as: 'waterQualityData',
+              where: { isCompliant: true, dataQuality: DataQuality.VALID },
+              required: true,
+            }],
+          }],
+        }),
+        GovernanceProject.count({
+          include: [{
+            model: WaterBody,
+            as: 'waterBody',
+            where: waterBodyWhere,
+          }],
+        }),
+      ]);
+
+      return {
+        regionName: region.regionName,
+        regionCode: region.regionCode,
+        waterQualityComplianceRate: waterQualityResult.rate,
+        governanceCompletionRate: governanceResult.rate,
+        publicSatisfaction: satisfactionResult.score,
+        waterBodyCount,
+        qualifiedWaterBodyCount,
+        projectCount: projects,
+        level: regionId ? 'city' as const : 'province' as const,
+        provinceName: (region as any).parent?.regionName,
+      };
+    })
+  );
+
+  return result;
+};
+
+const getTrendData = async (
+  days: number,
+  regionId?: number,
+  waterBodyIds?: number[]
+): Promise<IDashboardStats['trend']> => {
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setDate(startDate.getDate() - days + 1);
+
+  const where: any = {
+    statType: StatType.REGION,
+    statDate: { [Op.between]: [startDate, endDate] },
+  };
+  if (regionId) where.regionId = regionId;
+
+  const stats = await RealtimeStat.findAll({
+    where,
+    order: [['statDate', 'ASC']],
+    attributes: ['statDate', 'waterQualityComplianceRate', 'governanceCompletionRate', 'publicSatisfaction', 'outletAbnormalityIndex'],
+  });
+
+  const dateMap = new Map<string, typeof stats[0]>();
+  stats.forEach((stat) => {
+    const dateKey = stat.statDate.toISOString().split('T')[0];
+    dateMap.set(dateKey, stat);
+  });
+
+  const result: IDashboardStats['trend'] = [];
+  for (let i = 0; i < days; i++) {
+    const currentDate = new Date(startDate);
+    currentDate.setDate(currentDate.getDate() + i);
+    const dateKey = currentDate.toISOString().split('T')[0];
+    const stat = dateMap.get(dateKey);
+
+    result.push({
+      date: dateKey,
+      waterQualityComplianceRate: stat?.waterQualityComplianceRate || 0,
+      governanceCompletionRate: stat?.governanceCompletionRate || 0,
+      publicSatisfaction: stat?.publicSatisfaction || 0,
+      outletAbnormalityIndex: stat?.outletAbnormalityIndex || 0,
+    });
+  }
+
+  return result;
+};
+
+const getSummaryStats = async (
+  regionId?: number,
+  waterBodyIds?: number[]
+): Promise<IDashboardStats['overview']['summary']> => {
+  const waterBodyWhere: any = { isActive: true };
+  if (regionId) waterBodyWhere.regionId = regionId;
+  if (waterBodyIds && waterBodyIds.length > 0) {
+    waterBodyWhere.waterBodyId = { [Op.in]: waterBodyIds };
+  }
+
+  const [totalWaterBodies, totalOutlets, totalProjects, totalComplaints, activeAlerts] = await Promise.all([
+    WaterBody.count({ where: waterBodyWhere }),
+    SewageOutlet.count({
+      include: [{
+        model: WaterBody,
+        as: 'waterBody',
+        where: waterBodyWhere,
+      }],
+    }),
+    GovernanceProject.count({
+      include: [{
+        model: WaterBody,
+        as: 'waterBody',
+        where: waterBodyWhere,
+      }],
+    }),
+    ComplaintOrder.count({
+      where: {
+        ...(regionId && { regionId }),
+      },
+    }),
+    Alert.count({
+      where: {
+        alertStatus: { [Op.in]: [AlertStatus.PENDING, AlertStatus.PROCESSING] },
+        ...(regionId && { regionId }),
+      },
+    }),
+  ]);
+
+  return {
+    totalWaterBodies,
+    totalOutlets,
+    totalProjects,
+    totalComplaints,
+    activeAlerts,
+  };
+};
+
+export const getDashboardStats = async (
+  province?: string,
+  waterLevel?: string,
+  days: number = 30
+): Promise<IDashboardStats> => {
+  let regionId: number | undefined;
+  let waterBodyIds: number[] = [];
+
+  if (province && province !== 'all') {
+    regionId = await getRegionIdByName(province);
+  }
+
+  if (waterLevel && waterLevel !== 'all') {
+    waterBodyIds = await getWaterBodyIdsByLevel(waterLevel);
+  }
+
+  const [
+    waterQualityResult,
+    governanceResult,
+    satisfactionResult,
+    abnormalityResult,
+    regionList,
+    trend,
+    summary,
+  ] = await Promise.all([
+    calculateWaterQualityComplianceRate(regionId, waterBodyIds?.[0], undefined, 30),
+    calculateGovernanceCompletionRate(regionId, waterBodyIds?.[0]),
+    calculatePublicSatisfaction(regionId, waterBodyIds?.[0], 30),
+    calculateOutletAbnormalityIndex(regionId, waterBodyIds?.[0], undefined, 3),
+    getRegionList(regionId, waterBodyIds),
+    getTrendData(days, regionId, waterBodyIds),
+    getSummaryStats(regionId, waterBodyIds),
+  ]);
+
+  const [
+    yoyWaterQuality,
+    yoyGovernance,
+    yoySatisfaction,
+    yoyAbnormality,
+    momWaterQuality,
+    momGovernance,
+    momSatisfaction,
+    momAbnormality,
+  ] = await Promise.all([
+    calculateYearOnYearData(waterQualityResult.rate, StatType.REGION, regionId, waterBodyIds),
+    calculateYearOnYearData(governanceResult.rate, StatType.REGION, regionId, waterBodyIds),
+    calculateYearOnYearData(satisfactionResult.score, StatType.REGION, regionId, waterBodyIds),
+    calculateYearOnYearData(abnormalityResult.index, StatType.REGION, regionId, waterBodyIds),
+    calculateMonthOnMonthData(waterQualityResult.rate, StatType.REGION, regionId, waterBodyIds),
+    calculateMonthOnMonthData(governanceResult.rate, StatType.REGION, regionId, waterBodyIds),
+    calculateMonthOnMonthData(satisfactionResult.score, StatType.REGION, regionId, waterBodyIds),
+    calculateMonthOnMonthData(abnormalityResult.index, StatType.REGION, regionId, waterBodyIds),
+  ]);
+
+  return {
+    overview: {
+      waterQualityComplianceRate: waterQualityResult.rate,
+      governanceCompletionRate: governanceResult.rate,
+      publicSatisfaction: satisfactionResult.score,
+      outletAbnormalityIndex: abnormalityResult.index,
+      yearOnYear: {
+        waterQualityComplianceRate: yoyWaterQuality,
+        governanceCompletionRate: yoyGovernance,
+        publicSatisfaction: yoySatisfaction,
+        outletAbnormalityIndex: yoyAbnormality,
+      },
+      monthOnMonth: {
+        waterQualityComplianceRate: momWaterQuality,
+        governanceCompletionRate: momGovernance,
+        publicSatisfaction: momSatisfaction,
+        outletAbnormalityIndex: momAbnormality,
+      },
+      summary,
+    },
+    regionList,
+    trend,
+  };
+};
+
 export default {
   calculateWaterQualityComplianceRate,
   calculateGovernanceCompletionRate,
@@ -492,4 +858,5 @@ export default {
   getStatList,
   getLatestStats,
   getTrendStats,
+  getDashboardStats,
 };

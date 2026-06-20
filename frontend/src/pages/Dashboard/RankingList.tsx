@@ -1,46 +1,36 @@
-import { useState, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import { Card, Radio, Table, Tag, Space } from 'antd'
-import { getRegionStats } from '@/api/stats'
-import type { RegionStats, StatsFilterParams } from '@/types'
+import type { DashboardStats } from '@/types'
 
 interface RankingListProps {
-  filterParams?: StatsFilterParams
+  data?: DashboardStats['regionList']
+  loading?: boolean
 }
 
-type RankDimension = 'qualifiedRate' | 'completionRate' | 'satisfaction'
+type RankDimension = 'waterQualityComplianceRate' | 'governanceCompletionRate' | 'publicSatisfaction'
 type RankScope = 'province' | 'city'
 
-function RankingList({ filterParams }: RankingListProps) {
-  const [loading, setLoading] = useState(false)
-  const [data, setData] = useState<RegionStats[]>([])
-  const [dimension, setDimension] = useState<RankDimension>('qualifiedRate')
+function RankingList({ data = [], loading }: RankingListProps) {
+  const [dimension, setDimension] = useState<RankDimension>('waterQualityComplianceRate')
   const [scope, setScope] = useState<RankScope>('province')
 
-  useEffect(() => {
-    fetchData()
-  }, [filterParams, scope])
+  const displayData = useMemo(() => {
+    return data.filter(item => item.level === scope)
+  }, [data, scope])
 
-  const fetchData = async () => {
-    setLoading(true)
-    try {
-      const result = await getRegionStats(filterParams)
-      setData(result)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const sortedData = [...data]
-    .sort((a, b) => b[dimension] - a[dimension])
-    .slice(0, 10)
+  const sortedData = useMemo(() => {
+    return [...displayData]
+      .sort((a, b) => b[dimension] - a[dimension])
+      .slice(0, 10)
+  }, [displayData, dimension])
 
   const getDimensionLabel = () => {
     switch (dimension) {
-      case 'qualifiedRate':
+      case 'waterQualityComplianceRate':
         return '水质达标率'
-      case 'completionRate':
+      case 'governanceCompletionRate':
         return '治理完成率'
-      case 'satisfaction':
+      case 'publicSatisfaction':
         return '公众满意度'
     }
   }
@@ -66,8 +56,8 @@ function RankingList({ filterParams }: RankingListProps) {
     },
     {
       title: scope === 'province' ? '省份' : '城市',
-      dataIndex: 'province',
-      key: 'province'
+      dataIndex: 'regionName',
+      key: 'regionName'
     },
     {
       title: getDimensionLabel(),
@@ -78,7 +68,7 @@ function RankingList({ filterParams }: RankingListProps) {
           {value.toFixed(1)}%
         </span>
       ),
-      sorter: (a: RegionStats, b: RegionStats) => a[dimension] - b[dimension]
+      sorter: (a: any, b: any) => a[dimension] - b[dimension]
     },
     {
       title: '水体总数',
@@ -87,13 +77,13 @@ function RankingList({ filterParams }: RankingListProps) {
     },
     {
       title: '达标数',
-      dataIndex: 'qualifiedCount',
-      key: 'qualifiedCount'
+      dataIndex: 'qualifiedWaterBodyCount',
+      key: 'qualifiedWaterBodyCount'
     },
     {
       title: '治理项目数',
-      dataIndex: 'treatmentCount',
-      key: 'treatmentCount'
+      dataIndex: 'projectCount',
+      key: 'projectCount'
     }
   ]
 
@@ -108,9 +98,9 @@ function RankingList({ filterParams }: RankingListProps) {
             <Radio.Button value="city">按城市</Radio.Button>
           </Radio.Group>
           <Radio.Group value={dimension} onChange={(e) => setDimension(e.target.value)} size="small">
-            <Radio.Button value="qualifiedRate">达标率</Radio.Button>
-            <Radio.Button value="completionRate">完成率</Radio.Button>
-            <Radio.Button value="satisfaction">满意度</Radio.Button>
+            <Radio.Button value="waterQualityComplianceRate">达标率</Radio.Button>
+            <Radio.Button value="governanceCompletionRate">完成率</Radio.Button>
+            <Radio.Button value="publicSatisfaction">满意度</Radio.Button>
           </Radio.Group>
         </Space>
       }
@@ -118,7 +108,7 @@ function RankingList({ filterParams }: RankingListProps) {
       <Table
         dataSource={sortedData}
         columns={columns}
-        rowKey="provinceCode"
+        rowKey="regionCode"
         pagination={false}
         size="small"
       />

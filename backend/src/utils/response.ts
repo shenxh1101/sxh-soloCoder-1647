@@ -47,11 +47,11 @@ export const paginate = <T = any>(
   return res.status(code).json({
     code,
     message,
-    data,
-    pagination: {
-      page,
-      pageSize,
+    data: {
+      list: data,
       total,
+      pageNum: page,
+      pageSize,
       totalPages,
     },
     timestamp: Date.now(),

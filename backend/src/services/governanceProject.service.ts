@@ -43,7 +43,7 @@ const calculateProgress = (startDate: Date, endDate: Date, actualStart?: Date | 
 };
 
 const calculateProgressDeviation = (plannedProgress: number, actualProgress: number): number => {
-  return Math.round((actualProgress - plannedProgress) * 100) / 100;
+  return Math.round((plannedProgress - actualProgress) * 100) / 100;
 };
 
 const autoDetectProjectStatus = (
@@ -60,7 +60,7 @@ const autoDetectProjectStatus = (
     return ProjectStatus.DELAYED;
   }
 
-  if (progressDeviation < -10) {
+  if (progressDeviation > 10) {
     return ProjectStatus.DELAYED;
   }
 

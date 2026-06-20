@@ -1,12 +1,13 @@
-import { useMemo, useCallback } from 'react'
+import { useMemo, useCallback, useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Row, Col, Select, Space, Typography } from 'antd'
+import { Row, Col, Select, Space, Typography, Spin } from 'antd'
 import { FilterOutlined } from '@ant-design/icons'
 import HeatMap from './HeatMap'
 import RankingList from './RankingList'
 import OverviewCards from './OverviewCards'
 import TrendChart from './TrendChart'
-import type { StatsFilterParams } from '@/types'
+import { getDashboardStats } from '@/api/stats'
+import type { StatsFilterParams, DashboardStats } from '@/types'
 
 const { Title } = Typography
 
@@ -34,6 +35,9 @@ const PROVINCE_OPTIONS = [
 
 function Dashboard() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const [loading, setLoading] = useState(false)
+  const [dashboardData, setDashboardData] = useState<DashboardStats | null>(null)
+  const [days, setDays] = useState(30)
 
   const province = searchParams.get('province') || 'all'
   const waterLevel = searchParams.get('waterLevel') || 'all'
@@ -42,6 +46,23 @@ function Dashboard() {
     province: province !== 'all' ? province : undefined,
     waterLevel: waterLevel !== 'all' ? waterLevel : undefined
   }), [province, waterLevel])
+
+  const fetchData = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await getDashboardStats({
+        ...filterParams,
+        days
+      })
+      setDashboardData(data)
+    } finally {
+      setLoading(false)
+    }
+  }, [filterParams, days])
+
+  useEffect(() => {
+    fetchData()
+  }, [fetchData])
 
   const handleProvinceChange = useCallback((value: string) => {
     setSearchParams((prev) => {
@@ -71,6 +92,19 @@ function Dashboard() {
     })
   }, [setSearchParams, province])
 
+  const handleDrillDown = useCallback((drillProvince: string | null) => {
+    if (drillProvince) {
+      setSearchParams((prev) => {
+        prev.set('province', drillProvince)
+        return prev
+      })
+    }
+  }, [setSearchParams])
+
+  const handleTimeRangeChange = useCallback((newDays: number) => {
+    setDays(newDays)
+  }, [])
+
   return (
     <div style={{ padding: 16 }}>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -95,23 +129,40 @@ function Dashboard() {
         </Space>
       </div>
 
-      <Row gutter={[16, 16]}>
-        <Col xs={24}>
-          <OverviewCards filterParams={filterParams} />
-        </Col>
+      <Spin spinning={loading}>
+        <Row gutter={[16, 16]}>
+          <Col xs={24}>
+            <OverviewCards 
+              data={dashboardData?.overview} 
+              loading={loading}
+            />
+          </Col>
 
-        <Col xs={24} lg={16}>
-          <HeatMap filterParams={filterParams} />
-        </Col>
+          <Col xs={24} lg={16}>
+            <HeatMap 
+              data={dashboardData?.regionList} 
+              loading={loading}
+              filterParams={filterParams}
+              onDrillDown={handleDrillDown}
+            />
+          </Col>
 
-        <Col xs={24} lg={8}>
-          <RankingList filterParams={filterParams} />
-        </Col>
+          <Col xs={24} lg={8}>
+            <RankingList 
+              data={dashboardData?.regionList} 
+              loading={loading}
+            />
+          </Col>
 
-        <Col xs={24}>
-          <TrendChart filterParams={filterParams} />
-        </Col>
-      </Row>
+          <Col xs={24}>
+            <TrendChart 
+              data={dashboardData?.trend} 
+              loading={loading}
+              onTimeRangeChange={handleTimeRangeChange}
+            />
+          </Col>
+        </Row>
+      </Spin>
     </div>
   )
 }
